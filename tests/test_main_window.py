@@ -59,6 +59,46 @@ def test_record_action_is_disabled_stub(qtbot):
     assert record_actions[0].toolTip() == "Not yet implemented"
 
 
+def test_import_long_audio_warns_and_aborts_if_declined(qtbot, wav_file, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args, **kwargs: (warnings.append(args), QMessageBox.StandardButton.No)[1],
+    )
+    critical_calls = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", lambda *args, **kwargs: critical_calls.append(args)
+    )
+
+    path = wav_file(duration_seconds=31 * 60, sample_rate=800)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+
+    assert len(warnings) == 1
+    assert "long" in warnings[0][1].lower()
+    assert critical_calls == []
+    assert not window._play_button.isEnabled()
+
+
+def test_import_long_audio_proceeds_if_confirmed(qtbot, wav_file, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+    )
+
+    path = wav_file(duration_seconds=31 * 60, sample_rate=800)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+
+    assert window._play_button.isEnabled()
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+    assert window._duration_ms == pytest.approx(31 * 60 * 1000, abs=100)
+
+
 def test_failed_import_shows_supported_formats_and_keeps_playback_disabled(
     qtbot, tmp_path, monkeypatch
 ):

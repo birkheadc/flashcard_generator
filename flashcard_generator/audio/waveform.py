@@ -10,6 +10,11 @@ import soundfile as sf
 # to re-read the source file on every resize.
 NUM_COLUMNS = 4000
 
+# Long recordings haven't been exercised end-to-end yet (memory, UI
+# responsiveness, playback). Importing past this warns and requires
+# confirmation rather than refusing outright — see AudioTooLongError.
+MAX_DURATION_SECONDS = 30 * 60
+
 _BLOCK_SIZE = 1 << 16
 
 
@@ -21,8 +26,22 @@ class WaveformData:
     sample_rate: int
 
 
-def compute_waveform(path: str, num_columns: int = NUM_COLUMNS) -> WaveformData:
+class AudioTooLongError(RuntimeError):
+    def __init__(self, duration_seconds: float, max_duration_seconds: float):
+        self.duration_seconds = duration_seconds
+        self.max_duration_seconds = max_duration_seconds
+        super().__init__(
+            f"Audio is {duration_seconds / 60:.1f} minutes long; "
+            f"the app currently supports up to {max_duration_seconds / 60:.0f} minutes."
+        )
+
+
+def compute_waveform(
+    path: str, num_columns: int = NUM_COLUMNS, allow_long: bool = False
+) -> WaveformData:
     info = sf.info(path)
+    if not allow_long and info.duration > MAX_DURATION_SECONDS:
+        raise AudioTooLongError(info.duration, MAX_DURATION_SECONDS)
     total_frames = info.frames
     sample_rate = info.samplerate
     duration_seconds = info.duration

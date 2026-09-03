@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from flashcard_generator.audio.waveform import compute_waveform
+from flashcard_generator.audio.waveform import AudioTooLongError, compute_waveform
 
 
 def test_compute_waveform_basic_properties(wav_file):
@@ -45,3 +45,28 @@ def test_compute_waveform_num_columns_exceeds_frames(wav_file):
     assert len(data.peaks_min) == 4000
     assert not np.isnan(data.peaks_min).any()
     assert not np.isnan(data.peaks_max).any()
+
+
+def test_compute_waveform_rejects_audio_over_max_duration(wav_file):
+    # A low sample rate keeps this fixture file small on disk despite the
+    # "long" duration.
+    path = wav_file(duration_seconds=31 * 60, sample_rate=800)
+
+    with pytest.raises(AudioTooLongError):
+        compute_waveform(path)
+
+
+def test_compute_waveform_allows_audio_at_max_duration(wav_file):
+    path = wav_file(duration_seconds=30 * 60, sample_rate=800)
+
+    data = compute_waveform(path, num_columns=50)
+
+    assert data.duration_seconds == pytest.approx(30 * 60, abs=1)
+
+
+def test_compute_waveform_allow_long_bypasses_the_check(wav_file):
+    path = wav_file(duration_seconds=31 * 60, sample_rate=800)
+
+    data = compute_waveform(path, num_columns=50, allow_long=True)
+
+    assert data.duration_seconds == pytest.approx(31 * 60, abs=1)

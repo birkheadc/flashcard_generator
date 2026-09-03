@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..audio.waveform import compute_waveform
+from ..audio.waveform import AudioTooLongError, compute_waveform
 from .waveform_widget import WaveformWidget
 
 SUPPORTED_EXTENSIONS = ["wav", "flac", "ogg", "mp3", "aiff"]
@@ -99,13 +99,16 @@ class MainWindow(QMainWindow):
     def _load_audio_file(self, path: str) -> None:
         try:
             waveform_data = compute_waveform(path)
+        except AudioTooLongError as exc:
+            if not self._confirm_long_audio(exc):
+                return
+            try:
+                waveform_data = compute_waveform(path, allow_long=True)
+            except Exception as exc2:  # noqa: BLE001 - surfaced to the user, not crashed on
+                self._show_load_error(exc2)
+                return
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, not crashed on
-            supported = ", ".join(ext.upper() for ext in SUPPORTED_EXTENSIONS)
-            QMessageBox.critical(
-                self,
-                "Failed to load audio",
-                f"{exc}\n\nSupported file types: {supported}.",
-            )
+            self._show_load_error(exc)
             return
 
         self._player.stop()
@@ -113,6 +116,26 @@ class MainWindow(QMainWindow):
         self._player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
         self._play_button.setEnabled(True)
         self.setWindowTitle(f"Flashcard Generator — {Path(path).name}")
+
+    def _confirm_long_audio(self, exc: AudioTooLongError) -> bool:
+        choice = QMessageBox.warning(
+            self,
+            "Long audio file",
+            f"{exc}\n\nLonger files aren't officially supported yet and the app "
+            "may behave unpredictably (slow loading, high memory use, sluggish "
+            "waveform interaction).\n\nContinue anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return choice == QMessageBox.StandardButton.Yes
+
+    def _show_load_error(self, exc: Exception) -> None:
+        supported = ", ".join(ext.upper() for ext in SUPPORTED_EXTENSIONS)
+        QMessageBox.critical(
+            self,
+            "Failed to load audio",
+            f"{exc}\n\nSupported file types: {supported}.",
+        )
 
     def _toggle_playback(self) -> None:
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
