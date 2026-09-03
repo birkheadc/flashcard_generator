@@ -1,14 +1,8 @@
 import sys
 
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
+from PySide6.QtWidgets import QApplication
 
-
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Flashcard Generator")
-        self.setCentralWidget(QLabel("Hello, World!"))
-        self.resize(400, 200)
+from .ui.main_window import MainWindow
 
 
 def main():

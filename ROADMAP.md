@@ -5,12 +5,12 @@ manual workflow first (no ML, works on either machine), ML features
 (VAD, forced alignment) layered on afterward since they need the GPU
 machine. Each phase is independently verifiable before moving to the next.
 
-Status: **Phase 0 done.** Next up: **Phase 1**.
+Status: **Phase 1 done.** Next up: **Phase 2**.
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
 
-## Phase 1 — Audio import & playback
+## Phase 1 — Audio import & playback ✅
 - "Import file" dialog (`QFileDialog`) to load a full-length audio file.
 - Playback via `QMediaPlayer` / `QAudioOutput`: play, pause, seek.
 - Waveform rendering for the loaded file (`QPainter` or a `QGraphicsView`
