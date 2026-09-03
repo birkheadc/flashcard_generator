@@ -1,0 +1,28 @@
+{
+  "name": "flashcard-generator",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": [
+    "--device=/dev/dri"
+  ],
+  "mounts": [
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind",
+    "source=${localEnv:XDG_RUNTIME_DIR}/pulse,target=/tmp/pulse-native,type=bind"
+  ],
+  "containerEnv": {
+    "DISPLAY": "${localEnv:DISPLAY}",
+    "PULSE_SERVER": "unix:/tmp/pulse-native/native",
+    "QT_X11_NO_MITSHM": "1",
+    "VIRTUAL_ENV_DISABLE_PROMPT": "1"
+  },
+  "postCreateCommand": "uv sync",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "anthropic.claude-code"
+      ]
+    }
+  }
+}
