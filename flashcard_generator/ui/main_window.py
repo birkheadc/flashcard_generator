@@ -32,6 +32,26 @@ AUDIO_FILE_FILTER = (
 )
 
 
+class ItemTextEdit(QPlainTextEdit):
+    """QPlainTextEdit that hides its placeholder during IME composition.
+
+    Qt only hides placeholder text once the document actually contains
+    text, but an in-progress IME composition (e.g. romaji not yet
+    converted/committed to kana/kanji) doesn't touch the document — so
+    without this, the placeholder and the uncommitted composition text
+    render on top of each other for that first word.
+    """
+
+    def __init__(self, placeholder: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._placeholder = placeholder
+        self.setPlaceholderText(placeholder)
+
+    def inputMethodEvent(self, event) -> None:  # noqa: ANN001 - Qt override signature
+        super().inputMethodEvent(event)
+        self.setPlaceholderText("" if event.preeditString() else self._placeholder)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -106,8 +126,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._item_list_widget)
 
         layout.addWidget(QLabel("Text"))
-        self._item_text_edit = QPlainTextEdit(panel)
-        self._item_text_edit.setPlaceholderText("Type the phrase text for the selected item…")
+        self._item_text_edit = ItemTextEdit(
+            "Type the phrase text for the selected item…", panel
+        )
         self._item_text_edit.setEnabled(False)
         self._item_text_edit.setFixedHeight(80)
         self._item_text_edit.textChanged.connect(self._on_item_text_changed)

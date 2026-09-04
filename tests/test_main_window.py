@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QInputMethodEvent
 from PySide6.QtWidgets import QMessageBox
 
-from flashcard_generator.ui.main_window import MainWindow
+from flashcard_generator.ui.main_window import ItemTextEdit, MainWindow
 
 
 def test_import_loads_audio_and_enables_playback(qtbot, wav_file):
@@ -413,6 +413,19 @@ def test_text_edit_disabled_until_an_item_is_selected(qtbot, wav_file):
 
     assert window._item_text_edit.isEnabled()
     assert window._item_text_edit.toPlainText() == ""
+
+
+def test_ime_composition_hides_placeholder_text(qtbot):
+    edit = ItemTextEdit("Type the phrase text for the selected item…")
+    qtbot.addWidget(edit)
+
+    assert edit.placeholderText() != ""
+
+    edit.inputMethodEvent(QInputMethodEvent("は", []))
+    assert edit.placeholderText() == ""
+
+    edit.inputMethodEvent(QInputMethodEvent("", []))
+    assert edit.placeholderText() != ""
 
 
 def test_typing_in_text_edit_saves_to_the_selected_item(qtbot, wav_file):
