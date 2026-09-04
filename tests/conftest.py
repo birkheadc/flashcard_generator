@@ -6,6 +6,24 @@ import soundfile as sf
 
 
 @pytest.fixture
+def session_path(tmp_path):
+    """Where a test's autosaved session goes, isolated from the real one."""
+    return tmp_path / "session.json"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_session_path(session_path, monkeypatch):
+    """Point MainWindow()'s default session path at a per-test tmp file.
+
+    Without this, every MainWindow() created in a test would read/write the
+    developer's real ~/.flashcard_generator/session.json.
+    """
+    monkeypatch.setattr(
+        "flashcard_generator.ui.main_window.default_session_path", lambda: session_path
+    )
+
+
+@pytest.fixture
 def wav_file(tmp_path):
     """Writes a synthetic sine-wave WAV file and returns its path."""
 

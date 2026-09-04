@@ -39,6 +39,26 @@ def _ready_view(qtbot, width: int = 400, height: int = 200) -> WaveformView:
     return view
 
 
+def test_waveform_sized_correctly_when_loaded_before_first_show(qtbot):
+    # Mirrors session-restore-on-launch: set_waveform() runs while the
+    # widget still has its pre-layout placeholder size, before resize()/
+    # show() have ever run, so the viewport width _relayout_content()
+    # reads at that point is stale/tiny.
+    view = WaveformView()
+    qtbot.addWidget(view)
+
+    view.set_waveform(_make_data())
+
+    view.resize(400, 200)
+    view.show()
+    qtbot.waitExposed(view)
+    qtbot.wait(10)
+
+    assert view._waveform.width() == view._scroll_area.viewport().width()
+    assert view._waveform.width() > 100
+    assert view._content.width() == view._scroll_area.viewport().width()
+
+
 def test_fit_zoom_content_matches_viewport(qtbot):
     view = _ready_view(qtbot)
 

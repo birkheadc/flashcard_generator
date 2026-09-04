@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
 from ..items import Item, ItemList
+from ..session import default_session_path, load_session, save_session
 from .format_time import format_time
 from .waveform_view import WaveformView
 
@@ -53,7 +54,7 @@ class ItemTextEdit(QPlainTextEdit):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, session_path: Path | None = None):
         super().__init__()
         self.setWindowTitle("Flashcard Generator")
         self.resize(1100, 450)
@@ -68,6 +69,8 @@ class MainWindow(QMainWindow):
 
         self._duration_ms = 0
         self._items = ItemList()
+        self._audio_path: str | None = None
+        self._session_path = session_path if session_path is not None else default_session_path()
         self._pending_selection: tuple[float, float] | None = None
         self._loop_range: tuple[float, float] | None = None
         self._loop_source: str | None = None  # "item" | "selection" | None
@@ -76,6 +79,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._build_toolbar()
+        self._restore_session()
 
     def _build_ui(self) -> None:
         playback_panel = QWidget(self)
@@ -181,7 +185,7 @@ class MainWindow(QMainWindow):
             return
         self._load_audio_file(path)
 
-    def _load_audio_file(self, path: str) -> None:
+    def _load_audio_file(self, path: str, initial_items: list[Item] | None = None) -> None:
         if len(self._items) > 0 and not self._confirm_discard_items():
             return
 
@@ -202,12 +206,28 @@ class MainWindow(QMainWindow):
         self._player.stop()
         self._stop_loop()
         self._items.clear()
+        for item in initial_items or []:
+            self._items.add(item)
         self._refresh_item_list_widget()
         self._waveform.set_waveform(waveform_data)
         self._update_item_regions()
         self._player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
         self._play_button.setEnabled(True)
         self.setWindowTitle(f"Flashcard Generator — {Path(path).name}")
+
+        self._audio_path = str(Path(path).resolve())
+        self._save_session()
+
+    def _restore_session(self) -> None:
+        data = load_session(self._session_path)
+        if data is None:
+            return
+        self._load_audio_file(data.audio_path, initial_items=data.items)
+
+    def _save_session(self) -> None:
+        if self._audio_path is None:
+            return
+        save_session(self._session_path, self._audio_path, self._items)
 
     def _confirm_discard_items(self) -> bool:
         count = len(self._items)
@@ -299,6 +319,7 @@ class MainWindow(QMainWindow):
         self._waveform.clear_selection()
         self._refresh_item_list_widget(select_index=len(self._items) - 1)
         self._update_item_regions()
+        self._save_session()
 
     def _on_remove_item_clicked(self) -> None:
         index = self._item_list_widget.currentRow()
@@ -309,6 +330,7 @@ class MainWindow(QMainWindow):
         self._items.remove(index)
         self._refresh_item_list_widget()
         self._update_item_regions()
+        self._save_session()
 
     def _on_move_item_up(self) -> None:
         index = self._item_list_widget.currentRow()
@@ -319,6 +341,7 @@ class MainWindow(QMainWindow):
         self._items.move(index, index - 1)
         self._refresh_item_list_widget(select_index=index - 1)
         self._update_item_regions()
+        self._save_session()
 
     def _on_move_item_down(self) -> None:
         index = self._item_list_widget.currentRow()
@@ -329,6 +352,7 @@ class MainWindow(QMainWindow):
         self._items.move(index, index + 1)
         self._refresh_item_list_widget(select_index=index + 1)
         self._update_item_regions()
+        self._save_session()
 
     def _on_item_region_edited(self, index: int, start: float, end: float) -> None:
         old = self._items[index]
@@ -338,6 +362,7 @@ class MainWindow(QMainWindow):
             self._loop_range = (start, end)
         self._refresh_item_list_widget()
         self._update_item_regions()
+        self._save_session()
 
     def _on_current_item_changed(self, index: int) -> None:
         self._update_item_buttons_enabled()
@@ -361,6 +386,7 @@ class MainWindow(QMainWindow):
         # mid-keystroke.
         row_text = self._format_item_row(index, self._items[index])
         self._item_list_widget.item(index).setText(row_text)
+        self._save_session()
 
     def _on_preview_clicked(self) -> None:
         index = self._item_list_widget.currentRow()

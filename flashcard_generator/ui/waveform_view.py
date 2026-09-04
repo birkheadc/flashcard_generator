@@ -163,6 +163,14 @@ class WaveformView(QWidget):
         self._waveform.installEventFilter(self)
         self._ruler.installEventFilter(self)
 
+        # The viewport only reaches its real size once this widget is
+        # actually shown/laid out — set_waveform() called beforehand (e.g.
+        # restoring a session on startup) sees a stale, tiny viewport and
+        # _relayout_content() no-ops. Watch the viewport itself for its
+        # resize, since that's the one event guaranteed to fire once the
+        # real size is known, and redo the layout then.
+        self._scroll_area.viewport().installEventFilter(self)
+
         self._waveform.seek_requested.connect(self.seek_requested)
         self._waveform.selection_changed.connect(self.selection_changed)
         self._waveform.clip_region_edited.connect(self.clip_region_edited)
@@ -285,6 +293,9 @@ class WaveformView(QWidget):
         if event.type() == QEvent.Type.Wheel and obj in (self._waveform, self._ruler):
             self._handle_wheel(event)
             return True
+        if event.type() == QEvent.Type.Resize and obj is self._scroll_area.viewport():
+            self._relayout_content()
+            return False
         return super().eventFilter(obj, event)
 
     def _handle_wheel(self, event) -> None:  # noqa: ANN001 - QWheelEvent

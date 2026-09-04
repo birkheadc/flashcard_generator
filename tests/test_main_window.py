@@ -4,6 +4,9 @@ import pytest
 from PySide6.QtGui import QAction, QInputMethodEvent
 from PySide6.QtWidgets import QMessageBox
 
+from flashcard_generator.clips import Clip
+from flashcard_generator.items import Item, ItemList
+from flashcard_generator.session import load_session, save_session
 from flashcard_generator.ui.main_window import ItemTextEdit, MainWindow
 
 
@@ -494,3 +497,112 @@ def test_removing_item_deletes_it_regardless_of_text(qtbot, wav_file):
     window._on_remove_item_clicked()
 
     assert len(window._items) == 0
+
+
+# -- session persistence ---------------------------------------------------
+
+
+def test_loading_audio_with_no_prior_session_starts_empty(qtbot, session_path):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window._audio_path is None
+    assert not session_path.exists()
+
+
+def test_adding_item_autosaves_session(qtbot, wav_file, session_path):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+
+    data = load_session(session_path)
+    assert data is not None
+    assert data.audio_path == window._audio_path
+    assert len(data.items) == 1
+    assert data.items[0].clip.start_seconds == pytest.approx(1.0)
+
+
+def test_editing_text_autosaves_session(qtbot, wav_file, session_path):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._item_text_edit.setPlainText("saved text")
+
+    data = load_session(session_path)
+    assert data.items[0].text == "saved text"
+
+
+def test_removing_last_item_autosaves_empty_session(qtbot, wav_file, session_path):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._item_list_widget.setCurrentRow(0)
+    window._on_remove_item_clicked()
+
+    data = load_session(session_path)
+    assert data is not None
+    assert data.items == []
+
+
+def test_restoring_session_on_launch_reloads_audio_and_items(qtbot, wav_file, session_path):
+    path = wav_file(duration_seconds=10.0)
+    items = ItemList()
+    items.add(Item(clip=Clip(1.0, 2.0), text="restored item"))
+    save_session(session_path, path, items)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    assert len(window._items) == 1
+    assert window._items[0].text == "restored item"
+    assert window._item_list_widget.count() == 1
+    assert window._play_button.isEnabled()
+
+
+def test_restoring_session_with_missing_audio_shows_error_and_starts_empty(
+    qtbot, tmp_path, session_path, monkeypatch
+):
+    shown_messages = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", lambda *args, **kwargs: shown_messages.append(args)
+    )
+    items = ItemList()
+    items.add(Item(clip=Clip(1.0, 2.0), text="orphaned item"))
+    save_session(session_path, str(tmp_path / "gone.wav"), items)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert len(shown_messages) == 1
+    assert len(window._items) == 0
+    assert not window._play_button.isEnabled()
+
+
+def test_restoring_session_with_corrupted_file_starts_empty(qtbot, session_path):
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    session_path.write_text("not valid json", encoding="utf-8")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert len(window._items) == 0
+    assert window._audio_path is None

@@ -5,7 +5,8 @@ manual workflow first (no ML, works on either machine), ML features
 (VAD, forced alignment) layered on afterward since they need the GPU
 machine. Each phase is independently verifiable before moving to the next.
 
-Status: **Phase 3 done.** Next up: **Phase 4**.
+Status: **Phase 3 done.** **Phase 7 pulled forward and done early** (see
+note below). Next up: **Phase 4**.
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
@@ -38,6 +39,10 @@ PySide6 app skeleton, `MainWindow` renders. Done.
 - **Verify:** build a full session of items by hand, with no transcript
   and no ML, starting from a raw recording.
 
+> **Note:** Phase 7 (session persistence) was pulled forward and
+> implemented right after this phase, out of build order — see Phase 7
+> below for why and what's scoped down as a result.
+
 ## Phase 4 — Transcript import & manual matching
 - Load a plain-text transcript, split into sections (e.g. lines/paragraphs).
 - UI to associate a transcript section with a clip (manual pairing) as an
@@ -61,11 +66,25 @@ PySide6 app skeleton, `MainWindow` renders. Done.
 - **Verify:** export a deck, import the `.apkg` into a real Anki
   install, confirm cards display correctly and audio plays.
 
-## Phase 7 — Session persistence
-- Save/load an in-progress session (source audio path, transcript,
-  clips, items, cloze selections) to disk.
-- **Verify:** close and relaunch the app mid-session, confirm nothing
-  is lost.
+## Phase 7 — Session persistence ✅ *(done early, out of order)*
+- Pulled forward from its normal place in the build order: manually
+  rebuilding the item list after every app restart was slowing down
+  development itself (no code-reload story for a Qt desktop app), and
+  the crash-recovery benefit is worth having as early as possible for
+  end users too.
+- Implemented so far: silent autosave of source audio path + the item
+  list (clip spans + text) to a fixed on-disk location
+  (`~/.flashcard_generator/session.json`, `flashcard_generator/session.py`),
+  written after every add/remove/reorder/edit; silently restored on
+  the next launch. No explicit Save/Open UI — it's one continuous
+  session, not named/multiple sessions.
+- **Scoped down vs. the original plan:** no transcript or cloze-selection
+  fields yet, since those data models don't exist until Phases 4–5.
+  Extending the schema for them when those phases land is a small,
+  additive change to `session.py`, not a rework.
+- **Verify (done):** close/kill the app mid-session (including a
+  simulated crash — no clean shutdown path taken) and relaunch;
+  confirm audio and all items (spans + text) are restored automatically.
 
 *— Everything above works with no ML dependency, on either machine. —*
 
