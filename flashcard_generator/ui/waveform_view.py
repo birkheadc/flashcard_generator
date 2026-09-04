@@ -103,6 +103,8 @@ class WaveformView(QWidget):
     """
 
     seek_requested = Signal(float)
+    selection_changed = Signal(object)  # tuple[float, float] | None
+    clip_region_edited = Signal(int, float, float)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -162,6 +164,8 @@ class WaveformView(QWidget):
         self._ruler.installEventFilter(self)
 
         self._waveform.seek_requested.connect(self.seek_requested)
+        self._waveform.selection_changed.connect(self.selection_changed)
+        self._waveform.clip_region_edited.connect(self.clip_region_edited)
 
         self._update_buttons_enabled()
 
@@ -186,6 +190,16 @@ class WaveformView(QWidget):
         self._waveform.set_position(seconds)
         self._ruler.set_position(seconds)
         self._autoscroll_to(seconds)
+
+    @property
+    def selection(self) -> tuple[float, float] | None:
+        return self._waveform.selection
+
+    def clear_selection(self) -> None:
+        self._waveform.clear_selection()
+
+    def set_clip_regions(self, regions: list[tuple[float, float]]) -> None:
+        self._waveform.set_clip_regions(regions)
 
     # -- zoom ---------------------------------------------------------------
 

@@ -157,6 +157,45 @@ def test_ctrl_wheel_zooms_in_and_out(qtbot):
     assert view._zoom == pytest.approx(MIN_ZOOM)
 
 
+def test_selection_changed_forwards_from_inner_widget(qtbot):
+    view = _ready_view(qtbot)
+    received = []
+    view.selection_changed.connect(received.append)
+
+    view._waveform.set_selection(2.0, 5.0)
+
+    assert received == [(2.0, 5.0)]
+    assert view.selection == (2.0, 5.0)
+
+
+def test_clear_selection_delegates_to_inner_widget(qtbot):
+    view = _ready_view(qtbot)
+    view._waveform.set_selection(2.0, 5.0)
+
+    view.clear_selection()
+
+    assert view.selection is None
+
+
+def test_clip_region_edited_forwards_from_inner_widget(qtbot):
+    view = _ready_view(qtbot)
+    view.set_clip_regions([(2.0, 5.0)])
+    received = []
+    view.clip_region_edited.connect(lambda *args: received.append(args))
+
+    view._waveform.clip_region_edited.emit(0, 2.0, 8.0)
+
+    assert received == [(0, 2.0, 8.0)]
+
+
+def test_set_clip_regions_delegates_to_inner_widget(qtbot):
+    view = _ready_view(qtbot)
+
+    view.set_clip_regions([(1.0, 2.0)])
+
+    assert view._waveform._clip_regions == [(1.0, 2.0)]
+
+
 def test_plain_wheel_scrolls_horizontally_when_zoomed(qtbot):
     view = _ready_view(qtbot)
     view._on_zoom_in()

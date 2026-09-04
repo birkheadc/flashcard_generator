@@ -5,7 +5,7 @@ manual workflow first (no ML, works on either machine), ML features
 (VAD, forced alignment) layered on afterward since they need the GPU
 machine. Each phase is independently verifiable before moving to the next.
 
-Status: **Phase 1 done.** Next up: **Phase 2**.
+Status: **Phase 2 done.** Next up: **Phase 3**.
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
@@ -21,7 +21,7 @@ PySide6 app skeleton, `MainWindow` renders. Done.
 - **Verify:** load a real ~30-min recording, see its waveform, scrub and
   play/pause smoothly.
 
-## Phase 2 — Manual breakpoints & clips
+## Phase 2 — Manual breakpoints & clips ✅
 - Click-to-place breakpoints on the waveform; select a region as a clip
   (start/end times).
 - Loop-preview playback of just the selected region.
