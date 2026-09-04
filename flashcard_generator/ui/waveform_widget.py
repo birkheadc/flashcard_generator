@@ -55,7 +55,14 @@ class WaveformWidget(QWidget):
             peaks_max = self._data.peaks_max
             num_columns = len(peaks_min)
             painter.setPen(QPen(QColor("#4fc3f7")))
-            for x in range(width):
+            # Only draw the columns Qt actually asked us to repaint. At high
+            # zoom this widget can be far wider than the visible viewport, so
+            # painting the full width on every playhead update would scale
+            # with zoom instead of with what's on screen.
+            dirty = event.rect()
+            x_start = max(0, dirty.left())
+            x_end = min(width, dirty.right() + 1)
+            for x in range(x_start, x_end):
                 idx = min(int(x * num_columns / width), num_columns - 1)
                 y_top = mid_y - float(peaks_max[idx]) * mid_y
                 y_bottom = mid_y - float(peaks_min[idx]) * mid_y

@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
+
+from flashcard_generator.audio.waveform import WaveformData
+from flashcard_generator.ui.waveform_view import MAX_ZOOM, MIN_ZOOM, WaveformView
+
+
+def _make_data(duration: float = 60.0, num_columns: int = 100) -> WaveformData:
+    peaks_min = np.full(num_columns, -0.5, dtype=np.float32)
+    peaks_max = np.full(num_columns, 0.5, dtype=np.float32)
+    return WaveformData(peaks_min, peaks_max, duration, 44100)
+
+
+def _wheel_event(x: float, delta_y: int, ctrl: bool = False) -> QWheelEvent:
+    modifiers = Qt.KeyboardModifier.ControlModifier if ctrl else Qt.KeyboardModifier.NoModifier
+    return QWheelEvent(
+        QPointF(x, 10),
+        QPointF(x, 10),
+        QPoint(0, 0),
+        QPoint(0, delta_y),
+        Qt.MouseButton.NoButton,
+        modifiers,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+def _ready_view(qtbot, width: int = 400, height: int = 200) -> WaveformView:
+    view = WaveformView()
+    qtbot.addWidget(view)
+    view.resize(width, height)
+    view.show()
+    qtbot.waitExposed(view)
+    view.set_waveform(_make_data())
+    return view
+
+
+def test_fit_zoom_content_matches_viewport(qtbot):
+    view = _ready_view(qtbot)
+
+    assert view._zoom == MIN_ZOOM
+    assert view._content.width() == view._scroll_area.viewport().width()
+    assert not view._zoom_out_button.isEnabled()
+    assert not view._zoom_fit_button.isEnabled()
+    assert view._zoom_in_button.isEnabled()
+
+
+def test_zoom_in_widens_content_and_enables_zoom_out(qtbot):
+    view = _ready_view(qtbot)
+    viewport_width = view._scroll_area.viewport().width()
+
+    view._on_zoom_in()
+
+    assert view._zoom == pytest.approx(MIN_ZOOM * 2)
+    assert view._content.width() == pytest.approx(viewport_width * 2, abs=1)
+    assert view._waveform.width() == view._content.width()
+    assert view._ruler.width() == view._content.width()
+    assert view._zoom_out_button.isEnabled()
+
+
+def test_zoom_fit_resets_after_zooming_in(qtbot):
+    view = _ready_view(qtbot)
+    viewport_width = view._scroll_area.viewport().width()
+
+    view._on_zoom_in()
+    view._on_zoom_in()
+    view._on_zoom_fit()
+
+    assert view._zoom == MIN_ZOOM
+    assert view._content.width() == viewport_width
+    assert not view._zoom_out_button.isEnabled()
+
+
+def test_zoom_in_clamps_to_max_and_disables_button(qtbot):
+    view = _ready_view(qtbot)
+
+    for _ in range(20):
+        view._on_zoom_in()
+
+    assert view._zoom == MAX_ZOOM
+    assert not view._zoom_in_button.isEnabled()
+
+
+def test_zoom_out_clamps_to_min(qtbot):
+    view = _ready_view(qtbot)
+
+    view._on_zoom_out()
+
+    assert view._zoom == MIN_ZOOM
+
+
+def test_loading_new_waveform_resets_zoom_and_scroll(qtbot):
+    view = _ready_view(qtbot)
+    view._on_zoom_in()
+    view._on_zoom_in()
+    assert view._zoom > MIN_ZOOM
+
+    view.set_waveform(_make_data(duration=10.0))
+
+    assert view._zoom == MIN_ZOOM
+    assert view._scroll_area.horizontalScrollBar().value() == 0
+
+
+def test_seek_from_waveform_forwards_through_view(qtbot):
+    view = _ready_view(qtbot)
+    received = []
+    view.seek_requested.connect(received.append)
+
+    view._waveform._seek_to_x(view._waveform.width() / 2)
+
+    assert len(received) == 1
+    assert received[0] == pytest.approx(30.0, abs=1.0)
+
+
+def test_ruler_paints_without_crashing(qtbot):
+    view = _ready_view(qtbot)
+    view.set_position(15.0)
+    view.show()
+
+    pixmap = view._ruler.grab()
+
+    assert pixmap.size().width() == view._ruler.width()
+
+
+def test_autoscroll_follows_playhead_when_zoomed_in(qtbot):
+    view = _ready_view(qtbot)
+    for _ in range(4):
+        view._on_zoom_in()
+    bar = view._scroll_area.horizontalScrollBar()
+    bar.setValue(0)
+
+    view.set_position(55.0)  # near the end of a 60s file, off the left edge
+
+    assert bar.value() > 0
+
+
+def test_autoscroll_does_nothing_at_fit_zoom(qtbot):
+    view = _ready_view(qtbot)
+    bar = view._scroll_area.horizontalScrollBar()
+
+    view.set_position(59.0)
+
+    assert bar.value() == 0
+
+
+def test_ctrl_wheel_zooms_in_and_out(qtbot):
+    view = _ready_view(qtbot)
+
+    view.eventFilter(view._waveform, _wheel_event(x=50, delta_y=120, ctrl=True))
+    assert view._zoom == pytest.approx(MIN_ZOOM * 2)
+
+    view.eventFilter(view._waveform, _wheel_event(x=50, delta_y=-120, ctrl=True))
+    assert view._zoom == pytest.approx(MIN_ZOOM)
+
+
+def test_plain_wheel_scrolls_horizontally_when_zoomed(qtbot):
+    view = _ready_view(qtbot)
+    view._on_zoom_in()
+    view._on_zoom_in()
+    bar = view._scroll_area.horizontalScrollBar()
+    bar.setValue(bar.maximum() // 2)
+    start = bar.value()
+
+    view.eventFilter(view._ruler, _wheel_event(x=50, delta_y=-120, ctrl=False))
+
+    assert bar.value() == start + 120

@@ -20,7 +20,7 @@ dist/
 
 # App-specific
 *.apkg
-flashcard_generator/sample/
+sample/
 
 # Secrets
 .env

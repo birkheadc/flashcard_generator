@@ -18,21 +18,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..audio.waveform import AudioTooLongError, compute_waveform
-from .waveform_widget import WaveformWidget
+from .format_time import format_time
+from .waveform_view import WaveformView
 
 SUPPORTED_EXTENSIONS = ["wav", "flac", "ogg", "mp3", "aiff"]
 AUDIO_FILE_FILTER = (
     "Audio files (" + " ".join(f"*.{ext}" for ext in SUPPORTED_EXTENSIONS) + ");;All files (*)"
 )
-
-
-def format_time(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    minutes, secs = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
 
 
 class MainWindow(QMainWindow):
@@ -58,7 +50,7 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         layout = QVBoxLayout(central)
 
-        self._waveform = WaveformWidget(central)
+        self._waveform = WaveformView(central)
         self._waveform.seek_requested.connect(self._seek_to_seconds)
         layout.addWidget(self._waveform)
 
