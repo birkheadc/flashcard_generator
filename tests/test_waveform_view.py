@@ -6,7 +6,7 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 
 from flashcard_generator.audio.waveform import WaveformData
-from flashcard_generator.ui.waveform_view import MAX_ZOOM, MIN_ZOOM, WaveformView
+from flashcard_generator.ui.waveform_view import MAX_ZOOM, MIN_ZOOM, ZOOM_STEP, WaveformView
 
 
 def _make_data(duration: float = 60.0, num_columns: int = 100) -> WaveformData:
@@ -55,8 +55,8 @@ def test_zoom_in_widens_content_and_enables_zoom_out(qtbot):
 
     view._on_zoom_in()
 
-    assert view._zoom == pytest.approx(MIN_ZOOM * 2)
-    assert view._content.width() == pytest.approx(viewport_width * 2, abs=1)
+    assert view._zoom == pytest.approx(MIN_ZOOM + ZOOM_STEP)
+    assert view._content.width() == pytest.approx(viewport_width * (MIN_ZOOM + ZOOM_STEP), abs=1)
     assert view._waveform.width() == view._content.width()
     assert view._ruler.width() == view._content.width()
     assert view._zoom_out_button.isEnabled()
@@ -78,7 +78,7 @@ def test_zoom_fit_resets_after_zooming_in(qtbot):
 def test_zoom_in_clamps_to_max_and_disables_button(qtbot):
     view = _ready_view(qtbot)
 
-    for _ in range(20):
+    for _ in range(260):  # (MAX_ZOOM - MIN_ZOOM) / ZOOM_STEP, plus headroom
         view._on_zoom_in()
 
     assert view._zoom == MAX_ZOOM
@@ -151,7 +151,7 @@ def test_ctrl_wheel_zooms_in_and_out(qtbot):
     view = _ready_view(qtbot)
 
     view.eventFilter(view._waveform, _wheel_event(x=50, delta_y=120, ctrl=True))
-    assert view._zoom == pytest.approx(MIN_ZOOM * 2)
+    assert view._zoom == pytest.approx(MIN_ZOOM + ZOOM_STEP)
 
     view.eventFilter(view._waveform, _wheel_event(x=50, delta_y=-120, ctrl=True))
     assert view._zoom == pytest.approx(MIN_ZOOM)
@@ -198,8 +198,8 @@ def test_set_clip_regions_delegates_to_inner_widget(qtbot):
 
 def test_plain_wheel_scrolls_horizontally_when_zoomed(qtbot):
     view = _ready_view(qtbot)
-    view._on_zoom_in()
-    view._on_zoom_in()
+    for _ in range(8):  # enough steps to give the scrollbar plenty of range
+        view._on_zoom_in()
     bar = view._scroll_area.horizontalScrollBar()
     bar.setValue(bar.maximum() // 2)
     start = bar.value()

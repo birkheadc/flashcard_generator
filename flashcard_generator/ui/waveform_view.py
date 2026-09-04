@@ -18,7 +18,7 @@ from .waveform_widget import WaveformWidget
 
 MIN_ZOOM = 1.0
 MAX_ZOOM = 64.0
-ZOOM_STEP = 2.0
+ZOOM_STEP = 0.25  # flat increment per step (25% of MIN_ZOOM), not a multiplier
 
 RULER_HEIGHT = 24
 
@@ -204,10 +204,10 @@ class WaveformView(QWidget):
     # -- zoom ---------------------------------------------------------------
 
     def _on_zoom_in(self) -> None:
-        self._set_zoom(self._zoom * ZOOM_STEP)
+        self._set_zoom(self._zoom + ZOOM_STEP)
 
     def _on_zoom_out(self) -> None:
-        self._set_zoom(self._zoom / ZOOM_STEP)
+        self._set_zoom(self._zoom - ZOOM_STEP)
 
     def _on_zoom_fit(self) -> None:
         self._set_zoom(MIN_ZOOM)
@@ -291,8 +291,8 @@ class WaveformView(QWidget):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             content_width = self._content.width()
             anchor_fraction = event.position().x() / content_width if content_width else 0.0
-            factor = ZOOM_STEP if event.angleDelta().y() > 0 else 1 / ZOOM_STEP
-            self._set_zoom(self._zoom * factor, anchor_fraction=anchor_fraction)
+            delta = ZOOM_STEP if event.angleDelta().y() > 0 else -ZOOM_STEP
+            self._set_zoom(self._zoom + delta, anchor_fraction=anchor_fraction)
         else:
             bar = self._scroll_area.horizontalScrollBar()
             bar.setValue(bar.value() - event.angleDelta().y())
