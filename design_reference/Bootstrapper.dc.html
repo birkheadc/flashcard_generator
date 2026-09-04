@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<!-- @template name="Audio bootstrapper" description="Single-window audio→flashcard workflow: waveform clipping, transcript matching, item deck, item editor, note template and export." -->
+<helmet>
+<script src="./ds-base.js"></script>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;600&display=swap">
+<style>body{margin:0}input[type=range]{accent-color:#0f5c57;height:2px}textarea:focus{border-color:var(--cyprus-400);box-shadow:var(--focus-ring)}</style>
+</helmet>
+<div style="min-height:100vh;min-width:max-content;display:flex;align-items:center;justify-content:center;background:var(--paper-3);padding:20px;font-family:var(--font-ui);font-size:var(--text-ui);color:var(--text-body)">
+<div style="position:relative;flex:0 0 auto;width:1360px;min-width:1360px;height:860px;display:flex;flex-direction:column;overflow:hidden;background:var(--paper-1);border:1px solid var(--ink-5);border-radius:var(--radius-4);box-shadow:var(--shadow-modal)">
+
+<div style="display:flex;align-items:center;gap:12px;height:38px;padding:0 12px;background:var(--paper-2);border-bottom:1px solid var(--ink-5);flex:0 0 auto">
+<div style="display:flex;gap:6px"><span style="width:11px;height:11px;border-radius:999px;background:#c8553d"></span><span style="width:11px;height:11px;border-radius:999px;background:#d9a72c"></span><span style="width:11px;height:11px;border-radius:999px;background:#4f8a5b"></span></div>
+<div style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px"><span style="font-size:var(--text-meta);font-weight:600;color:var(--text-body)">Bootstrap — Japanese · NHK Radio News</span><span style="font-family:var(--font-mono);font-size:var(--text-meta);color:var(--text-subtle)">nhk-r2-2026-09-02.wav</span></div>
+<span style="font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-subtle)">28:14</span>
+</div>
+
+<div style="display:flex;align-items:center;gap:6px;height:44px;padding:0 12px;background:var(--paper-0);border-bottom:1px solid var(--ink-5);flex:0 0 auto">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" variant="secondary" iconLeft="{{ icAudio }}" hint-size="126px,28px">Import audio</x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" variant="secondary" iconLeft="{{ icText }}" hint-size="146px,28px">Import transcript</x-import>
+<div style="width:1px;height:20px;background:var(--ink-5);margin:0 4px"></div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Tooltip" label="Detect speech clips" shortcut="D" placement="bottom" hint-size="150px,28px">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" variant="secondary" iconLeft="{{ icWand }}" hint-size="150px,28px">Suggest clips</x-import>
+</x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Tooltip" label="Align transcript to audio" shortcut="A" placement="bottom" hint-size="150px,28px">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" variant="secondary" iconLeft="{{ icAlign }}" disabled="{{ alignDisabled }}" hint-size="150px,28px">Align transcript</x-import>
+</x-import>
+<div style="flex:1"></div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" variant="secondary" iconLeft="{{ icLayout }}" onClick="{{ openTemplate }}" hint-size="112px,28px">Note template</x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Tooltip" label="Export deck" shortcut="⌘E" placement="bottom" hint-size="94px,28px">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" variant="primary" iconLeft="{{ icUpload }}" onClick="{{ openExport }}" hint-size="94px,28px">Export</x-import>
+</x-import>
+<div style="width:1px;height:20px;background:var(--ink-5);margin:0 4px"></div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="sliders-horizontal" label="Preferences" size="md" hint-size="28px,28px"></x-import>
+</div>
+
+<div style="flex:0 0 auto;display:flex;height:330px;min-height:0;border-bottom:1px solid var(--ink-5)">
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--paper-0)">
+<div style="display:flex;align-items:center;gap:12px;padding:0 12px;height:26px;border-bottom:1px solid var(--ink-5);background:var(--paper-1)">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Waveform</span>
+<div style="flex:1;display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled)"><span>00:00</span><span>00:30</span><span>01:00</span><span>01:30</span><span>02:00</span><span>02:30</span><span>03:00</span><span>03:30</span></div>
+</div>
+<div style="position:relative;flex:1;min-height:0;cursor:crosshair">
+<div style="position:absolute;left:12px;right:12px;top:22px;bottom:14px;display:flex;align-items:center;gap:1px">{{ waveBars }}</div>
+<div style="position:absolute;left:12px;right:12px;top:0;bottom:0">{{ regionEls }}{{ playheadEl }}</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;padding:0 12px;height:38px;border-top:1px solid var(--ink-5);background:var(--paper-1)">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="{{ transportIcon }}" label="Play" size="md" variant="outline" active="{{ playing }}" onClick="{{ togglePlay }}" hint-size="28px,28px"></x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="repeat" label="Loop selected clip" size="md" variant="outline" active="{{ loop }}" onClick="{{ toggleLoop }}" hint-size="28px,28px"></x-import>
+<span style="font-family:var(--font-mono);font-size:var(--text-meta);color:var(--text-body);font-weight:700">{{ clock }}</span>
+<div style="width:1px;height:20px;background:var(--ink-5);margin:0 2px"></div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" size="sm" variant="secondary" iconLeft="{{ icScissors }}" hint-size="118px,24px">Split at playhead</x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" size="sm" variant="ghost" iconLeft="{{ icPlus }}" hint-size="112px,24px">Clip from selection</x-import>
+<div style="flex:1"></div>
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Zoom</span>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="minus" label="Zoom out" size="sm" hint-size="24px,24px"></x-import>
+<input type="range" min="0" max="100" value="{{ zoom }}" onChange="{{ setZoom }}" style="width:96px">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="plus" label="Zoom in" size="sm" hint-size="24px,24px"></x-import>
+<span style="font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-subtle);width:44px;text-align:right">{{ zoomLabel }}</span>
+</div>
+</div>
+
+<sc-if value="{{ hasTranscript }}" hint-placeholder-val="{{ true }}">
+<div style="width:340px;flex:0 0 auto;display:flex;flex-direction:column;background:var(--paper-1);border-left:1px solid var(--ink-5)">
+<div style="display:flex;align-items:center;gap:8px;padding:0 6px 0 12px;height:26px;border-bottom:1px solid var(--ink-5);background:var(--paper-2)">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Transcript</span>
+<span style="font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled)">{{ transcriptMeta }}</span>
+<div style="flex:1"></div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="x" label="Close transcript" size="sm" onClick="{{ hideTranscript }}" hint-size="24px,24px"></x-import>
+</div>
+<div style="flex:1;min-height:0;overflow:auto;padding:6px">{{ sectionEls }}</div>
+<div style="display:flex;align-items:center;gap:8px;padding:8px;border-top:1px solid var(--ink-5);background:var(--paper-2)">
+<span style="flex:1;font-size:var(--text-meta);color:var(--text-subtle);text-wrap:pretty">{{ matchHint }}</span>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" size="sm" variant="secondary" disabled="{{ matchDisabled }}" onClick="{{ matchNow }}" hint-size="98px,24px">Match to clip</x-import>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="flex:1;min-height:0;display:flex">
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--paper-0)">
+<div style="display:flex;align-items:center;gap:12px;padding:0 6px 0 12px;height:26px;border-bottom:1px solid var(--ink-5);background:var(--paper-1)">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Clips</span>
+<span style="font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled);white-space:nowrap">{{ deckMeta }}</span>
+<span style="flex:1;font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled);white-space:nowrap;overflow:hidden">↑↓ select · ⏎ edit · ⌫ discard</span>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Tabs" variant="segmented" tabs="{{ filterTabs }}" value="{{ filter }}" onChange="{{ setFilter }}" hint-size="248px,24px"></x-import>
+</div>
+<div style="display:flex;align-items:center;gap:10px;padding:0 12px;height:22px;border-bottom:1px solid var(--ink-5);background:var(--paper-0);font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-disabled)">
+<span style="width:14px"></span><span style="width:112px">Range</span><span style="flex:1">Sentence</span><span style="width:96px">State</span><span style="width:52px;text-align:right">Play</span>
+</div>
+<div style="flex:1;min-height:0;overflow:auto">{{ rowEls }}</div>
+<div style="display:flex;align-items:center;gap:16px;padding:0 12px;height:28px;border-top:1px solid var(--ink-5);background:var(--paper-1);font-size:var(--text-meta);color:var(--text-subtle)">
+<span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:2px;background:var(--grade-good)"></span>drafted</span>
+<span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:8px;border-radius:2px;background:var(--grade-hard)"></span>not drafted</span>
+<div style="flex:1"></div>
+<span style="font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled)">{{ readyMeta }}</span>
+</div>
+</div>
+
+<sc-if value="{{ editorOpen }}" hint-placeholder-val="{{ true }}">
+<div style="width:400px;flex:0 0 auto;display:flex;flex-direction:column;background:var(--paper-1);border-left:1px solid var(--ink-5)">
+<div style="display:flex;align-items:center;gap:8px;padding:0 6px 0 14px;height:34px;border-bottom:1px solid var(--ink-5);background:var(--paper-2)">
+<span style="font-size:var(--text-ui);font-weight:600;color:var(--text-title)">Card draft</span>
+<span style="font-family:var(--font-mono);font-size:var(--text-meta);color:var(--text-subtle)">{{ selRange }}</span>
+<div style="flex:1"></div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="trash-2" label="Discard clip" size="sm" hint-size="24px,24px"></x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="x" label="Close inspector" size="sm" onClick="{{ closeEditor }}" hint-size="24px,24px"></x-import>
+</div>
+<div style="flex:1;min-height:0;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:16px">
+
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:center;gap:8px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Item text</span>
+<div style="flex:1"></div>
+<span style="font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled)">{{ clozeMeta }}</span>
+</div>
+<div style="padding:10px 12px;background:var(--paper-0);border:1px solid var(--ink-5);border-radius:var(--radius-3);cursor:text">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.HighlightedText" tokens="{{ tokens }}" size="read" onTokenClick="{{ onToken }}" hint-size="100%,64px"></x-import>
+</div>
+{{ clozeRow }}
+</div>
+
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:center;gap:8px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Optional fields</span>
+<div style="flex:1"></div>
+<span style="font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled)">from {{ presetName }}</span>
+</div>
+{{ draftFieldEls }}
+</div>
+
+<div style="display:flex;flex-direction:column;gap:8px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Clip audio</span>
+<div style="position:relative;height:52px;padding:0 10px;background:var(--paper-0);border:1px solid var(--ink-5);border-radius:var(--radius-3);display:flex;align-items:center;gap:1px">{{ miniBars }}{{ handleEls }}</div>
+<div style="display:flex;align-items:center;gap:8px">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" size="sm" variant="secondary" iconLeft="{{ icVolume }}" hint-size="96px,24px">Play clip</x-import>
+<span style="font-family:var(--font-mono);font-size:var(--text-meta);color:var(--text-subtle)">{{ selDurLabel }}</span>
+<div style="flex:1"></div>
+<span style="font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled)">⇧← nudge 50ms</span>
+</div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Checkbox" checked="{{ trim }}" onChange="{{ setTrim }}" label="Trim silence at the edges" hint="Removes 200ms of padding on both sides." hint-size="100%,40px"></x-import>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;gap:8px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Card preview</span>
+<div style="flex:1"></div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Tabs" variant="segmented" tabs="{{ faceTabs }}" value="{{ face }}" onChange="{{ setFace }}" hint-size="120px,24px"></x-import>
+</div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Flashcard" front="{{ cardFront }}" back="{{ cardBack }}" context="{{ cardContext }}" reading="{{ cardReading }}" revealed="{{ revealed }}" state="new" width="{{ 344 }}" hint-size="344px,200px"></x-import>
+<span style="font-size:var(--text-meta);color:var(--text-subtle);text-wrap:pretty">Rendered with the current note template · audio field attached ({{ selDurLabel }})</span>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid var(--ink-5);background:var(--paper-2)">
+<span style="flex:1;font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-disabled)">⏎ save · ⇥ next clip</span>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" size="sm" variant="ghost" hint-size="66px,24px">Discard</x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" size="sm" variant="primary" iconLeft="{{ icCheck }}" hint-size="128px,24px">Generate card</x-import>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="display:flex;align-items:center;gap:16px;height:26px;padding:0 12px;background:var(--paper-2);border-top:1px solid var(--ink-5);flex:0 0 auto;font-family:var(--font-mono);font-size:var(--text-micro);color:var(--text-subtle)">
+<span>{{ clock }} / 28:14</span>
+<span>{{ statusItems }}</span>
+<span>autosaved 2s ago</span>
+<div style="flex:1"></div>
+<span style="color:var(--text-accent)">{{ statusIncomplete }}</span>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Badge" tone="neutral" mono="{{ true }}" hint-size="52px,15px">ja-JP</x-import>
+</div>
+
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Dialog" open="{{ exportOpen }}" title="Export deck" subtitle="Writes an .apkg with clip audio embedded." width="{{ 560 }}" onClose="{{ closeDialog }}" footer="{{ exportFooter }}" hint-size="560px,440px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Input" label="Deck name" value="{{ deckName }}" onChange="{{ setDeckName }}" hint-size="100%,52px"></x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Input" label="Destination" mono="{{ true }}" value="{{ outPath }}" onChange="{{ setOutPath }}" iconLeft="folder" hint="Last used location" hint-size="100%,64px"></x-import>
+<div style="display:flex;gap:8px">{{ statCards }}</div>
+<div style="display:flex;flex-direction:column;gap:8px;padding:12px;background:var(--paper-1);border:1px solid var(--ink-5);border-radius:var(--radius-3)">
+<span style="font-size:var(--text-ui);font-weight:600;color:var(--text-title)">6 clips are not drafted</span>
+<div style="display:flex;flex-direction:column;gap:3px;font-family:var(--font-mono);font-size:var(--text-meta);color:var(--text-muted)">
+<span>00:41–00:44 · no sentence matched</span><span>01:47–01:52 · not drafted</span><span>02:05–02:08 · not drafted</span><span>02:41–02:47 · not drafted</span><span>03:18–03:23 · no sentence matched</span><span>03:48–03:52 · no sentence matched</span>
+</div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Checkbox" checked="{{ skipIncomplete }}" onChange="{{ setSkip }}" label="Export anyway, skipping the 6 undrafted clips" hint="They stay in this session." hint-size="100%,40px"></x-import>
+</div>
+</div>
+</x-import>
+
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Dialog" open="{{ templateOpen }}" title="Note template" subtitle="Applies to every card generated from this source." width="{{ 560 }}" onClose="{{ closeDialog }}" footer="{{ templateFooter }}" hint-size="560px,520px">
+<div style="display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Preset</span>
+<div style="display:flex;align-items:center;gap:6px">
+<div style="flex:1;min-width:0"><x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Select" value="{{ preset }}" onChange="{{ loadPreset }}" options="{{ presetOptions }}" size="sm" hint-size="100%,24px"></x-import></div>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" size="sm" variant="secondary" iconLeft="{{ icSave }}" disabled="{{ saveDisabled }}" onClick="{{ savePreset }}" hint-size="66px,24px">Save</x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Button" size="sm" variant="ghost" onClick="{{ saveAsPreset }}" hint-size="96px,24px">Save as new</x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.IconButton" name="trash-2" label="Delete preset" size="sm" hint-size="24px,24px"></x-import>
+</div>
+<span style="font-size:var(--text-meta);color:var(--text-subtle)">{{ presetStatus }}</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Card direction</span>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Radio" options="{{ dirOptions }}" value="{{ dir }}" onChange="{{ setDir }}" direction="row" hint-size="100%,44px"></x-import>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Fields</span>
+<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Tag" selected="{{ true }}" hint-size="52px,22px">Text</x-import>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Tag" selected="{{ true }}" hint-size="60px,22px">Audio</x-import>
+<span style="font-size:var(--text-meta);color:var(--text-disabled)">required</span>
+<span style="width:1px;height:16px;background:var(--ink-5)"></span>
+{{ fieldEls }}
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Select" value="" onChange="{{ addField }}" options="{{ addOptions }}" size="sm" hint-size="118px,24px"></x-import>
+</div>
+<span style="font-size:var(--text-meta);color:var(--text-subtle)">Text and Audio are always written. Everything else is optional — remove a field and its tag stops rendering on both faces.</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Front</span>
+<textarea value="{{ frontTpl }}" onChange="{{ setFrontTpl }}" spellcheck="false" style="width:100%;box-sizing:border-box;height:96px;resize:vertical;overflow:auto;padding:8px 10px;background:var(--paper-0);border:1px solid var(--border-field);border-radius:var(--radius-3);box-shadow:inset 0 1px 0 rgb(20 18 15 / .06);font-family:var(--font-mono);font-size:var(--text-meta);line-height:18px;color:var(--text-body);outline:none"></textarea>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<span style="font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Back</span>
+<textarea value="{{ backTpl }}" onChange="{{ setBackTpl }}" spellcheck="false" style="width:100%;box-sizing:border-box;height:96px;resize:vertical;overflow:auto;padding:8px 10px;background:var(--paper-0);border:1px solid var(--border-field);border-radius:var(--radius-3);box-shadow:inset 0 1px 0 rgb(20 18 15 / .06);font-family:var(--font-mono);font-size:var(--text-meta);line-height:18px;color:var(--text-body);outline:none"></textarea>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;padding:14px;background:var(--paper-1);border:1px solid var(--ink-5);border-radius:var(--radius-3);align-items:center">
+<span style="align-self:flex-start;font-size:var(--text-micro);font-weight:600;letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-subtle)">Preview</span>
+<x-import component-from-global-scope="FlashcardGeneratorDesignSystem_94182f.Flashcard" front="{{ cardFront }}" back="{{ cardBack }}" context="{{ cardContext }}" reading="{{ cardReading }}" revealed="{{ true }}" width="{{ 440 }}" hint-size="440px,220px"></x-import>
+</div>
+</div>
+</x-import>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;transcriptLoaded&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Session state&quot;},&quot;showInspector&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Session state&quot;},&quot;dialog&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;export&quot;,&quot;template&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;'none'|'export'|'template'&quot;,&quot;section&quot;:&quot;Session state&quot;}}">
+class Component extends DCLogic {
+  DUR = 240;
+  CLIPS = [
+    { id: 'c1', a: 12, b: 15.4, text: 'そうですね、そう思います', term: '思います', st: 'ready' },
+    { id: 'c2', a: 41, b: 44.2, text: '', term: '', st: 'draft' },
+    { id: 'c3', a: 63, b: 68.1, text: '明日は雨が降るかもしれません', term: '降る', st: 'ready' },
+    { id: 'c4', a: 82, b: 86.4, text: '気をつけてください', term: '気をつける', st: 'ready' },
+    { id: 'c5', a: 107, b: 112.6, text: '天気予報によると、週末は晴れるそうです', term: '', st: 'draft' },
+    { id: 'c6', a: 125, b: 128.3, text: 'ちょっと待ってください', term: '', st: 'draft' },
+    { id: 'c7', a: 139, b: 144.1, text: '洗濯物を干すのに、いい日になりそうです', term: '干す', st: 'ready' },
+    { id: 'c8', a: 161, b: 167.2, text: '会議は三時から始まる予定です', term: '', st: 'draft' },
+    { id: 'c9', a: 182, b: 185.5, text: 'それはいいアイデアですね', term: 'アイデア', st: 'ready' },
+    { id: 'c10', a: 198, b: 203.4, text: '', term: '', st: 'draft' },
+    { id: 'c11', a: 214, b: 219.8, text: '資料は事前に配っておきます', term: '配る', st: 'ready' },
+    { id: 'c12', a: 228, b: 232.6, text: '', term: '', st: 'draft' }
+  ];
+  PRESETS = [
+    {
+      id: 'p1', name: 'Sentence + audio (default)',
+      fields: ['Reading', 'Gloss'],
+      front: '<div class="sentence">{{Text}}</div>\n{{Audio}}',
+      back: '{{FrontSide}}\n<hr id="answer">\n<div class="reading">{{Reading}}</div>\n<div class="gloss">{{Gloss}}</div>'
+    },
+    {
+      id: 'p2', name: 'Term front',
+      fields: ['Term', 'Reading', 'Gloss'],
+      front: '<div class="term">{{Term}}</div>\n{{Audio}}',
+      back: '{{FrontSide}}\n<hr id="answer">\n<div class="gloss">{{Gloss}}</div>\n<div class="sentence">{{Text}}</div>'
+    },
+    {
+      id: 'p4', name: 'Cloze sentence',
+      fields: ['Reading', 'Gloss'],
+      front: '<div class="sentence">{{cloze:Text}}</div>\n{{Audio}}',
+      back: '{{FrontSide}}\n<hr id="answer">\n<div class="reading">{{Reading}}</div>\n<div class="gloss">{{Gloss}}</div>'
+    },
+    {
+      id: 'p3', name: 'Listening only',
+      fields: [],
+      front: '{{Audio}}',
+      back: '{{FrontSide}}\n<hr id="answer">\n<div class="sentence">{{Text}}</div>'
+    }
+  ];
+  OPTIONAL = ['Term', 'Reading', 'Gloss', 'Notes', 'Source', 'Pitch accent'];
+  SECTIONS = [
+    { id: 's1', text: 'そうですね、そう思います。', matched: true },
+    { id: 's2', text: '今日の天気について、お伝えします。', matched: false },
+    { id: 's3', text: '明日は雨が降るかもしれません。', matched: true },
+    { id: 's4', text: '外出するときは、傘を持っていってください。', matched: false },
+    { id: 's5', text: '気をつけてください。', matched: true },
+    { id: 's6', text: '天気予報によると、週末は晴れるそうです。', matched: true },
+    { id: 's7', text: '洗濯物を干すのに、いい日になりそうですね。', matched: true },
+    { id: 's8', text: '会議は三時から始まる予定です。', matched: false },
+    { id: 's9', text: '資料は事前に配っておきます。', matched: true },
+    { id: 's10', text: 'それはいいアイデアですね。', matched: true }
+  ];
+  state = {
+    sel: 'c3', sec: 's8', zoom: 46, playing: true, loop: true, at: 66.4,
+    dialog: null, transcript: true, face: 'front', filter: 'all', editor: true,
+    draft: { Reading: 'ふ・る', Gloss: 'to fall (rain, snow)' }, trim: true,
+    dir: 'recognition', skip: false,
+    deckName: 'Japanese — NHK Radio News',
+    outPath: '~/Anki/export/nhk-r2-2026-09-02.apkg',
+    preset: 'p4', dirty: false, fields: ['Reading', 'Gloss'],
+    clozes: { c3: ['雨が降る'], c1: ['そう思います'], c4: ['気をつけて'] },
+    frontTpl: '<div class="sentence">{{cloze:Text}}</div>\n{{Audio}}',
+    backTpl: '{{FrontSide}}\n<hr id="answer">\n<div class="reading">{{Reading}}</div>\n<div class="gloss">{{Gloss}}</div>'
+  };
+  ns() { return window.FlashcardGeneratorDesignSystem_94182f || {}; }
+  ico(name, size) {
+    const I = this.ns().Icon;
+    return I ? React.createElement(I, { name, size: size || 15 }) : null;
+  }
+  fmt(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0'); }
+  stColor(st) { return st === 'ready' ? 'var(--grade-good)' : 'var(--grade-hard)'; }
+  wave(n, seed) {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const x = i / n;
+      const e = Math.sin(x * 41 + seed) * .5 + Math.sin(x * 7.3 + seed * 2) * .3 + Math.sin(x * 113 + seed) * .2;
+      const env = .35 + .65 * Math.abs(Math.sin(x * 9 + seed * .7));
+      out.push({ v: Math.min(1, Math.abs(e) * env * 1.6 + .05), t: x * this.DUR });
+    }
+    return out;
+  }
+  tokenize(text, spans) {
+    if (!text) return [{ text: '—' }];
+    let rest = text;
+    const out = [];
+    (spans || []).forEach((span, n) => {
+      const i = rest.indexOf(span);
+      if (i < 0) return;
+      if (i > 0) out.push({ text: rest.slice(0, i) });
+      out.push({ text: span, mark: 'marked', lemma: 'c' + (n + 1) });
+      rest = rest.slice(i + span.length);
+    });
+    if (rest) out.push({ text: rest });
+    return out;
+  }
+  rowEl(c, isSel) {
+    const N = this.ns();
+    const dot = this.stColor(c.st);
+    const cell = { display: 'flex', alignItems: 'center' };
+    return React.createElement('div', {
+      key: c.id, onClick: () => this.setState({ sel: c.id, editor: true }),
+      style: {
+        display: 'flex', alignItems: 'center', gap: 10, padding: '0 12px', height: 30,
+        background: isSel ? 'var(--cyprus-100)' : 'transparent',
+        boxShadow: 'inset 0 -1px 0 var(--ink-5)', cursor: 'default'
+      }
+    },
+      React.createElement('span', { style: { ...cell, width: 14 } },
+        React.createElement('span', { style: { width: 8, height: 8, borderRadius: 2, background: dot } })),
+      React.createElement('span', { style: { width: 112, fontFamily: 'var(--font-mono)', fontSize: 'var(--text-meta)', color: isSel ? 'var(--text-accent)' : 'var(--text-muted)' } }, this.fmt(c.a) + '–' + this.fmt(c.b)),
+      React.createElement('span', {
+        style: {
+          flex: 1, minWidth: 0, fontFamily: 'var(--font-read)', fontSize: 15, color: c.text ? 'var(--text-title)' : 'var(--text-disabled)',
+          fontStyle: c.text ? 'normal' : 'italic', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+        }
+      }, c.text || 'no sentence matched'),
+      React.createElement('span', { style: { ...cell, width: 96 } },
+        N.Badge ? React.createElement(N.Badge, { tone: c.st === 'ready' ? 'good' : 'hard' }, c.st === 'ready' ? 'drafted' : 'not drafted') : null),
+      React.createElement('span', { style: { ...cell, width: 52, justifyContent: 'flex-end', gap: 2 } },
+        N.IconButton ? React.createElement(N.IconButton, {
+          name: 'volume-2', label: 'Play clip', size: 'sm',
+          onClick: (e) => { e.stopPropagation(); this.setState({ sel: c.id, at: c.a, playing: true }); }
+        }) : null,
+        N.IconButton ? React.createElement(N.IconButton, { name: 'trash-2', label: 'Discard clip', size: 'sm', onClick: (e) => e.stopPropagation() }) : null)
+    );
+  }
+  statCard(fig, label, tone) {
+    const N = this.ns();
+    return React.createElement(N.Card || 'div', { key: label, padding: 'var(--space-4)', elevation: 'hairline', style: { flex: 1 } },
+      React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+        React.createElement('span', { style: { fontFamily: 'var(--font-mono)', fontSize: 'var(--text-h3)', fontWeight: 700, color: tone } }, fig),
+        React.createElement('span', { style: { fontSize: 'var(--text-meta)', color: 'var(--text-subtle)' } }, label)));
+  }
+  renderVals() {
+    const st = this.state, N = this.ns();
+    const hasTranscript = (this.props.transcriptLoaded ?? true) && st.transcript;
+    const editorOpen = (this.props.showInspector ?? true) && st.editor;
+    const dialog = st.dialog ?? (this.props.dialog && this.props.dialog !== 'none' ? this.props.dialog : null);
+    const sel = this.CLIPS.find(c => c.id === st.sel) || this.CLIPS[0];
+    const clozes = st.clozes[st.sel] || [];
+    const ready = this.CLIPS.filter(c => c.st === 'ready').length;
+    const undrafted = this.CLIPS.length - ready;
+    const preset = this.PRESETS.find(p => p.id === st.preset) || this.PRESETS[0];
+    const isCloze = /\{\{\s*cloze:/.test(st.frontTpl) || /\{\{\s*cloze:/.test(st.backTpl);
+
+    const waveBars = this.wave(232, 1.7).map((b, i) => {
+      const c = this.CLIPS.find(x => b.t >= x.a && b.t <= x.b);
+      return React.createElement('div', {
+        key: i, style: {
+          flex: 1, minWidth: 1, height: Math.round(8 + b.v * 84) + '%', borderRadius: 1,
+          background: c ? (c.id === st.sel ? 'var(--cyprus-500)' : this.stColor(c.st)) : 'var(--ink-4)',
+          opacity: c ? 1 : .5
+        }
+      });
+    });
+    const regionEls = this.CLIPS.map(c => {
+      const col = this.stColor(c.st);
+      const isSel = c.id === st.sel;
+      return React.createElement('div', {
+        key: c.id, onClick: () => this.setState({ sel: c.id, editor: true }),
+        style: {
+          position: 'absolute', top: 14, bottom: 14, left: (c.a / this.DUR) * 100 + '%', width: ((c.b - c.a) / this.DUR) * 100 + '%',
+          boxSizing: 'border-box', cursor: 'grab',
+          background: isSel ? 'rgb(15 92 87 / .10)' : 'rgb(20 18 15 / .035)',
+          borderLeft: '1.5px solid ' + (isSel ? 'var(--cyprus-500)' : col),
+          borderRight: '1.5px solid ' + (isSel ? 'var(--cyprus-500)' : col),
+          borderTop: (c.st === 'ready' ? '1.5px solid ' : '1.5px dashed ') + (isSel ? 'var(--cyprus-500)' : col)
+        }
+      }, isSel ? React.createElement('span', {
+        style: { position: 'absolute', top: -13, left: 0, fontFamily: 'var(--font-mono)', fontSize: 9, whiteSpace: 'nowrap', color: 'var(--text-accent)' }
+      }, this.fmt(c.a) + '–' + this.fmt(c.b)) : null);
+    });
+    const playheadEl = React.createElement('div', {
+      key: 'ph', style: { position: 'absolute', top: 6, bottom: 8, left: (st.at / this.DUR) * 100 + '%', width: 1.5, background: 'var(--ink-0)' }
+    }, React.createElement('span', { style: { position: 'absolute', top: -4, left: -3.5, width: 8, height: 8, background: 'var(--ink-0)', borderRadius: 2 } }));
+
+    const miniBars = this.wave(64, 4.2).map((b, i) => React.createElement('div', {
+      key: i, style: { flex: 1, minWidth: 1, height: Math.round(10 + b.v * 82) + '%', borderRadius: 1, background: i < 6 || i > 57 ? 'var(--ink-4)' : 'var(--cyprus-500)', opacity: i < 6 || i > 57 ? .45 : 1 }
+    }));
+    const handleEls = [10, 90].map((p, i) => React.createElement('div', {
+      key: i, style: { position: 'absolute', top: 0, bottom: 0, left: p + '%', width: 3, background: 'var(--cyprus-500)', borderRadius: 2, cursor: 'ew-resize' }
+    }));
+
+    const sectionEls = this.SECTIONS.map(s => {
+      const isSel = st.sec === s.id;
+      return React.createElement('div', {
+        key: s.id, onClick: () => this.setState({ sec: s.id }),
+        style: {
+          display: 'flex', gap: 8, padding: '6px 8px', marginBottom: 2, borderRadius: 'var(--radius-2)', cursor: 'grab',
+          background: isSel ? 'var(--cyprus-100)' : 'transparent',
+          border: '1px solid ' + (isSel ? 'var(--cyprus-300)' : 'transparent'),
+          opacity: s.matched && !isSel ? .45 : 1
+        }
+      },
+        React.createElement('span', { style: { flex: '0 0 auto', width: 13, paddingTop: 4, color: s.matched ? 'var(--grade-good)' : 'var(--text-disabled)' } },
+          N.Icon ? React.createElement(N.Icon, { name: s.matched ? 'check' : 'circle-dashed', size: 13 }) : null),
+        React.createElement('span', { style: { flex: 1, fontFamily: 'var(--font-read)', fontSize: 15, lineHeight: '25px', color: 'var(--text-body)' } }, s.text));
+    });
+
+    const shown = st.filter === 'ready' ? this.CLIPS.filter(c => c.st === 'ready')
+      : st.filter === 'unready' ? this.CLIPS.filter(c => c.st !== 'ready') : this.CLIPS;
+    const rowEls = shown.map(c => this.rowEl(c, c.id === st.sel));
+
+    const footerBtn = (label, variant, onClick, disabled) => N.Button
+      ? React.createElement(N.Button, { key: label, variant, onClick, disabled }, label) : null;
+
+    return {
+      waveBars, regionEls, playheadEl, miniBars, handleEls, sectionEls, rowEls,
+      hasTranscript, editorOpen,
+      icAudio: this.ico('audio-waveform'), icText: this.ico('file-text'), icWand: this.ico('wand-sparkles'),
+      icAlign: this.ico('align-left'), icLayout: this.ico('layout-template'), icUpload: this.ico('upload'),
+      icScissors: this.ico('scissors', 13), icPlus: this.ico('plus', 13), icVolume: this.ico('volume-2', 13),
+      icCheck: this.ico('check', 13),
+      alignDisabled: !hasTranscript,
+      transportIcon: st.playing ? 'pause' : 'play',
+      playing: st.playing, togglePlay: () => this.setState({ playing: !st.playing }),
+      loop: st.loop, toggleLoop: () => this.setState({ loop: !st.loop }),
+      clock: this.fmt(st.at),
+      zoom: st.zoom, setZoom: (e) => this.setState({ zoom: +e.target.value }),
+      zoomLabel: (2 + st.zoom / 12).toFixed(1) + '×',
+      transcriptMeta: this.SECTIONS.filter(s => s.matched).length + ' / ' + this.SECTIONS.length + ' matched',
+      hideTranscript: () => this.setState({ transcript: false }),
+      matchHint: st.sec ? 'Section selected — pick a clip on the waveform, or match it to the selected clip.' : 'Drag a section onto a clip, or select both and match.',
+      matchDisabled: !st.sec, matchNow: () => this.setState({ sec: null }),
+      deckMeta: shown.length + ' of ' + this.CLIPS.length,
+      readyMeta: ready + ' drafted · ' + undrafted + ' not drafted',
+      filter: st.filter, setFilter: (id) => this.setState({ filter: id }),
+      filterTabs: [{ id: 'all', label: 'All', count: this.CLIPS.length }, { id: 'ready', label: 'Drafted', count: ready }, { id: 'unready', label: 'Not drafted', count: undrafted }],
+      selRange: this.fmt(sel.a) + '–' + this.fmt(sel.b),
+      selDurLabel: (sel.b - sel.a).toFixed(1) + 's',
+      closeEditor: () => this.setState({ editor: false }),
+      tokens: this.tokenize(sel.text, isCloze ? clozes : []),
+      onToken: (tok) => {
+        if (!isCloze || !tok || !tok.text) return;
+        const next = clozes.indexOf(tok.text) >= 0 ? clozes.filter(x => x !== tok.text) : clozes.concat([tok.text]);
+        this.setState({ clozes: { ...st.clozes, [sel.id]: next } });
+      },
+      clozeMeta: isCloze ? (clozes.length ? clozes.length + (clozes.length === 1 ? ' cloze' : ' clozes') : 'no cloze yet') : 'plain text template',
+      clozeRow: isCloze
+        ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 } },
+          clozes.map((c, n) => N.Tag ? React.createElement(N.Tag, {
+            key: c, selected: true,
+            onRemove: () => this.setState({ clozes: { ...st.clozes, [sel.id]: clozes.filter(x => x !== c) } })
+          }, 'c' + (n + 1) + ' · ' + c) : null),
+          React.createElement('span', { style: { fontSize: 'var(--text-meta)', color: 'var(--text-subtle)', flex: '1 1 100%', textWrapStyle: 'pretty' } },
+            clozes.length
+              ? 'Select more text and press C to add another cloze — each one becomes its own card.'
+              : 'Select a word or phrase in the text above and press C to blank it. Multiple clozes make multiple cards.'))
+        : React.createElement('span', { style: { fontSize: 'var(--text-meta)', color: 'var(--text-subtle)' } },
+          'This template writes the sentence whole. Switch to a cloze template to blank words out.'),
+      draftFieldEls: st.fields.length
+        ? React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
+          st.fields.map(f => React.createElement('div', { key: f, style: { flex: st.fields.length === 1 ? '1 1 100%' : '1 1 46%', minWidth: 0 } },
+            N.Input ? React.createElement(N.Input, {
+              label: f,
+              value: st.draft[f] || '',
+              placeholder: f === 'Reading' ? 'ふ・る' : '',
+              onChange: (v) => this.setState({ draft: { ...st.draft, [f]: v } })
+            }) : null)))
+        : React.createElement('span', { style: { fontSize: 'var(--text-meta)', color: 'var(--text-subtle)' } }, 'This template writes Text and Audio only — nothing else to fill in.'),
+      trim: st.trim, setTrim: (v) => this.setState({ trim: v }),
+      halfStyle: { flex: 1 },
+      faceTabs: [{ id: 'front', label: 'Front' }, { id: 'back', label: 'Back' }],
+      face: st.face, setFace: (id) => this.setState({ face: id }),
+      revealed: st.face === 'back',
+      cardFront: isCloze && clozes.length
+        ? clozes.reduce((t, c) => t.replace(c, '［　　］'), sel.text || '—')
+        : (sel.text || '—'),
+      cardBack: st.draft.Gloss || '—', cardReading: st.draft.Reading || '',
+      cardContext: sel.text || '—',
+      statusItems: this.CLIPS.length + ' clips · ' + ready + ' cards drafted',
+      statusIncomplete: undrafted + ' not drafted',
+      exportOpen: dialog === 'export', templateOpen: dialog === 'template',
+      openExport: () => this.setState({ dialog: 'export' }),
+      openTemplate: () => this.setState({ dialog: 'template' }),
+      closeDialog: () => this.setState({ dialog: null }),
+      deckName: st.deckName, setDeckName: (v) => this.setState({ deckName: v }),
+      outPath: st.outPath, setOutPath: (v) => this.setState({ outPath: v }),
+      skipIncomplete: st.skip, setSkip: (v) => this.setState({ skip: v }),
+      statCards: [
+        this.statCard(String(ready), 'cards drafted', 'var(--text-title)'),
+        this.statCard(String(undrafted), 'clips not drafted', 'var(--grade-hard)'),
+        this.statCard('3:12', 'clip audio', 'var(--text-title)')
+      ],
+      exportFooter: [
+        footerBtn('Cancel', 'ghost', () => this.setState({ dialog: null })),
+        footerBtn(st.skip ? 'Export ' + ready + ' cards' : 'Export ' + this.CLIPS.length + ' cards', 'primary', () => this.setState({ dialog: null }), !st.skip)
+      ],
+      templateFooter: [
+        footerBtn('Cancel', 'ghost', () => this.setState({ dialog: null })),
+        footerBtn('Apply to session', 'primary', () => this.setState({ dialog: null }))
+      ],
+      presetOptions: this.PRESETS.map(p => ({ value: p.id, label: p.name })),
+      preset: st.preset, presetName: preset.name,
+      loadPreset: (id) => {
+        const p = this.PRESETS.find(x => x.id === id) || this.PRESETS[0];
+        this.setState({ preset: p.id, fields: p.fields.slice(), frontTpl: p.front, backTpl: p.back, dirty: false });
+      },
+      dirty: st.dirty,
+      presetStatus: st.dirty ? 'Edited — unsaved changes to “' + preset.name + '”' : 'Loaded from “' + preset.name + '”',
+      savePreset: () => this.setState({ dirty: false }),
+      saveAsPreset: () => this.setState({ dirty: false }),
+      fieldEls: st.fields.map(f => N.Tag ? React.createElement(N.Tag, {
+        key: f, onRemove: () => this.setState({ fields: st.fields.filter(x => x !== f), dirty: true })
+      }, f) : null),
+      addOptions: [{ value: '', label: '+ Add field' }].concat(this.OPTIONAL.filter(f => st.fields.indexOf(f) < 0).map(f => ({ value: f, label: f }))),
+      addField: (f) => { if (f && st.fields.indexOf(f) < 0) this.setState({ fields: st.fields.concat([f]), dirty: true }); },
+      saveDisabled: !st.dirty,
+      icSave: this.ico('save', 13),
+      dirOptions: [
+        { value: 'recognition', label: 'Recognition', hint: 'sentence → gloss' },
+        { value: 'production', label: 'Production', hint: 'gloss → term' },
+        { value: 'both', label: 'Both', hint: 'two cards per clip' }
+      ],
+      dir: st.dir, setDir: (v) => this.setState({ dir: v }),
+      frontTpl: st.frontTpl, setFrontTpl: (e) => this.setState({ frontTpl: e.target.value, dirty: true }),
+      backTpl: st.backTpl, setBackTpl: (e) => this.setState({ backTpl: e.target.value, dirty: true }),
+      noop: () => {}
+    };
+  }
+}
+</script>
+</body>
+</html>

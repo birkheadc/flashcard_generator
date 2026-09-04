@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QMessageBox
 from flashcard_generator.clips import Clip
 from flashcard_generator.items import Item, ItemList
 from flashcard_generator.session import load_session, save_session
-from flashcard_generator.ui.main_window import ItemTextEdit, MainWindow
+from flashcard_generator.ui.main_window import RANGE_COLUMN, TEXT_COLUMN, ItemTextEdit, MainWindow
 
 
 def test_import_loads_audio_and_enables_playback(qtbot, wav_file):
@@ -134,7 +134,7 @@ def test_add_item_appends_to_list_and_clears_selection(qtbot, wav_file):
     assert window._items[0].clip.start_seconds == pytest.approx(1.0)
     assert window._items[0].clip.end_seconds == pytest.approx(3.0)
     assert window._items[0].text == ""
-    assert window._item_list_widget.count() == 1
+    assert window._item_list_widget.rowCount() == 1
     assert window._waveform.selection is None
     assert not window._add_item_button.isEnabled()
 
@@ -288,7 +288,7 @@ def test_dragging_item_edge_on_waveform_updates_the_item(qtbot, wav_file):
 
     assert window._items[0].clip.start_seconds == pytest.approx(1.0)
     assert window._items[0].clip.end_seconds == pytest.approx(5.0)
-    assert window._item_list_widget.item(0).text().startswith("1. 0:01–0:05")
+    assert window._item_list_widget.item(0, RANGE_COLUMN).text().startswith("0:01–0:05")
 
 
 def test_editing_item_region_preserves_its_text(qtbot, wav_file):
@@ -328,7 +328,7 @@ def test_loading_new_file_clears_items_if_confirmed(qtbot, wav_file, monkeypatch
     window._load_audio_file(second_path)
 
     assert len(window._items) == 0
-    assert window._item_list_widget.count() == 0
+    assert window._item_list_widget.rowCount() == 0
 
 
 def test_loading_new_file_with_items_warns_and_aborts_if_declined(qtbot, wav_file, monkeypatch):
@@ -445,7 +445,7 @@ def test_typing_in_text_edit_saves_to_the_selected_item(qtbot, wav_file):
     window._item_text_edit.setPlainText("こんにちは")
 
     assert window._items[0].text == "こんにちは"
-    assert "こんにちは" in window._item_list_widget.item(0).text()
+    assert "こんにちは" in window._item_list_widget.item(0, TEXT_COLUMN).text()
 
 
 def test_selecting_a_different_item_loads_its_own_text(qtbot, wav_file):
@@ -574,7 +574,7 @@ def test_restoring_session_on_launch_reloads_audio_and_items(qtbot, wav_file, se
 
     assert len(window._items) == 1
     assert window._items[0].text == "restored item"
-    assert window._item_list_widget.count() == 1
+    assert window._item_list_widget.rowCount() == 1
     assert window._play_button.isEnabled()
 
 

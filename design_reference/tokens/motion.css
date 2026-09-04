@@ -1,0 +1,18 @@
+:root{
+--dur-instant:80ms; /* @kind other */
+--dur-fast:120ms; /* @kind other */
+--dur-base:180ms; /* @kind other */
+--dur-slow:260ms; /* @kind other */
+--dur-card-flip:340ms; /* @kind other */
+--ease-standard:cubic-bezier(.2,0,.2,1); /* @kind other */
+--ease-out:cubic-bezier(0,0,.2,1); /* @kind other */
+--ease-in:cubic-bezier(.4,0,1,1); /* @kind other */
+--ease-card:cubic-bezier(.32,.06,.24,1); /* @kind other */
+}
+@media (prefers-reduced-motion:reduce){:root{
+--dur-instant:0ms; /* @kind other */
+--dur-fast:0ms; /* @kind other */
+--dur-base:0ms; /* @kind other */
+--dur-slow:0ms; /* @kind other */
+--dur-card-flip:0ms; /* @kind other */
+}}

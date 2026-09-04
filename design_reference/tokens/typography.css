@@ -1,0 +1,20 @@
+:root{
+--font-ui:"Source Sans 3","Segoe UI",system-ui,sans-serif;
+--font-read:"Source Serif 4",Georgia,serif;
+--font-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+
+/* Desktop-app scale: chrome is small and dense, reading surfaces are large */
+--text-micro:10px;   --lh-micro:14px;
+--text-meta:11px;    --lh-meta:15px;
+--text-ui:13px;      --lh-ui:18px;   /* default app text */
+--text-ui-lg:15px;   --lh-ui-lg:21px;
+--text-h3:17px;      --lh-h3:23px;
+--text-h2:21px;      --lh-h2:27px;
+--text-h1:27px;      --lh-h1:33px;
+--text-read:19px;    --lh-read:31px; /* source passages */
+--text-card:34px;    --lh-card:42px; /* flashcard front */
+--text-card-lg:46px; --lh-card-lg:54px;
+
+--weight-regular:400;--weight-medium:500;--weight-semibold:600;--weight-bold:700;
+--tracking-caps:.07em;--tracking-tight:-.01em;--tracking-card:-.015em;
+}

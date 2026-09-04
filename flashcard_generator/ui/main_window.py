@@ -2,19 +2,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QAction
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
-    QListWidget,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSplitter,
+    QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -24,6 +30,7 @@ from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
 from ..items import Item, ItemList
 from ..session import default_session_path, load_session, save_session
+from . import theme
 from .format_time import format_time
 from .waveform_view import WaveformView
 
@@ -31,6 +38,33 @@ SUPPORTED_EXTENSIONS = ["wav", "flac", "ogg", "mp3", "aiff"]
 AUDIO_FILE_FILTER = (
     "Audio files (" + " ".join(f"*.{ext}" for ext in SUPPORTED_EXTENSIONS) + ");;All files (*)"
 )
+
+NOT_YET_IMPLEMENTED = "Not yet implemented — see ROADMAP.md"
+
+# Clip table columns and their fixed widths (Sentence is the one column that
+# stretches). Widths are fixed rather than content-driven, per the mockup's
+# own column layout (Bootstrapper.dc.html's header row: Range 112px, State
+# 96px, Play 52px), so an item flipping between "Drafted"/"Not drafted"
+# doesn't reflow the whole table.
+RANGE_COLUMN = 0
+TEXT_COLUMN = 1
+STATE_COLUMN = 2
+PLAY_COLUMN = 3
+
+RANGE_COLUMN_WIDTH = 132
+STATE_COLUMN_WIDTH = 118
+PLAY_COLUMN_WIDTH = 52
+
+
+def _lock_toggle_button_width(button: QPushButton, *texts: str) -> None:
+    """Fix a button's width to fit the widest of its possible labels, so a
+    button that changes text when clicked (Play/Pause and the like) doesn't
+    change size as it toggles."""
+    metrics = button.fontMetrics()
+    # Comfortably covers the QSS's own horizontal padding/border so text
+    # never brushes the edge in either state.
+    padding = 32
+    button.setFixedWidth(max(metrics.horizontalAdvance(t) for t in texts) + padding)
 
 
 class ItemTextEdit(QPlainTextEdit):
@@ -53,11 +87,61 @@ class ItemTextEdit(QPlainTextEdit):
         self.setPlaceholderText("" if event.preeditString() else self._placeholder)
 
 
+class ItemTableWidget(QTableWidget):
+    """The clip deck: one row per item, columns Range/Sentence/State/Play.
+
+    Delete/Backspace is bound to discarding the selected item, per
+    DESIGN.md §12's keyboard model. Also adds a couple of QListWidget-style
+    convenience methods (setCurrentRow) so call sites elsewhere don't need
+    to know this is backed by QTableWidget rather than QTableView cells.
+    """
+
+    delete_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(0, 4, parent)
+        # No header text for the Play column — it's just a row of icon
+        # buttons, a label would only add noise.
+        self.setHorizontalHeaderLabels(
+            [theme.section_label_text(t) for t in ("Range", "Sentence", "State", "")]
+        )
+        self.verticalHeader().setVisible(False)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setShowGrid(False)
+        self.setAlternatingRowColors(False)
+
+        # Fixed widths (not ResizeToContents) so a row's column layout can't
+        # shift depending on its own content — e.g. "Drafted" vs. "Not
+        # drafted" being different widths must not reflow every other row.
+        header = self.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header.setSectionResizeMode(RANGE_COLUMN, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(TEXT_COLUMN, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(STATE_COLUMN, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(PLAY_COLUMN, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(RANGE_COLUMN, RANGE_COLUMN_WIDTH)
+        self.setColumnWidth(STATE_COLUMN, STATE_COLUMN_WIDTH)
+        self.setColumnWidth(PLAY_COLUMN, PLAY_COLUMN_WIDTH)
+
+    def setCurrentRow(self, row: int) -> None:
+        self.setCurrentCell(row, RANGE_COLUMN)
+
+    def keyPressEvent(self, event) -> None:  # noqa: ANN001 - Qt override signature
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_requested.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, session_path: Path | None = None):
         super().__init__()
         self.setWindowTitle("Flashcard Generator")
-        self.resize(1100, 450)
+        self.resize(1280, 760)
+        theme.ensure_fonts_loaded()
+        self.setStyleSheet(theme.STYLESHEET)
 
         self._player = QMediaPlayer(self)
         self._audio_output = QAudioOutput(self)
@@ -81,69 +165,195 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._restore_session()
 
-    def _build_ui(self) -> None:
-        playback_panel = QWidget(self)
-        layout = QVBoxLayout(playback_panel)
+    # -- layout construction ------------------------------------------------
 
-        self._waveform = WaveformView(playback_panel)
+    def _section_label(self, text: str) -> QLabel:
+        label = QLabel(theme.section_label_text(text), self)
+        label.setObjectName("sectionLabel")
+        return label
+
+    def _build_ui(self) -> None:
+        central = QWidget(self)
+        central.setObjectName("centralWidget")
+        central_layout = QVBoxLayout(central)
+        # The mockup runs its panels edge-to-edge, but a real resizable
+        # desktop window reads better with breathing room around the
+        # content and between panels, so this deliberately departs from it.
+        central_layout.setContentsMargins(10, 10, 10, 10)
+        central_layout.setSpacing(0)
+
+        main_splitter = QSplitter(Qt.Orientation.Vertical, central)
+        main_splitter.setHandleWidth(10)
+        main_splitter.addWidget(self._build_waveform_panel())
+
+        deck_splitter = QSplitter(Qt.Orientation.Horizontal, main_splitter)
+        deck_splitter.setHandleWidth(10)
+        deck_splitter.addWidget(self._build_items_panel())
+        deck_splitter.addWidget(self._build_editor_panel())
+        deck_splitter.setStretchFactor(0, 2)
+        deck_splitter.setStretchFactor(1, 1)
+        main_splitter.addWidget(deck_splitter)
+
+        main_splitter.setStretchFactor(0, 3)
+        main_splitter.setStretchFactor(1, 2)
+
+        central_layout.addWidget(main_splitter)
+        self.setCentralWidget(central)
+
+        self._build_status_bar()
+
+    def _build_waveform_panel(self) -> QWidget:
+        panel = QWidget(self)
+        panel.setObjectName("waveformPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame(panel)
+        header.setObjectName("panelHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 4, 12, 4)
+        header_layout.addWidget(self._section_label("Waveform"))
+        header_layout.addStretch()
+        layout.addWidget(header)
+
+        self._waveform = WaveformView(panel)
         self._waveform.seek_requested.connect(self._seek_to_seconds)
         self._waveform.selection_changed.connect(self._on_selection_changed)
         self._waveform.clip_region_edited.connect(self._on_item_region_edited)
-        layout.addWidget(self._waveform)
+        layout.addWidget(self._waveform, 1)
 
-        hint = QLabel("Shift+drag to select a region · drag a region's edge to resize it")
-        hint.setStyleSheet("color: #888;")
+        hint = QLabel(
+            "Shift+drag to select a region · drag a region's edge to resize it", panel
+        )
+        hint.setObjectName("hintLabel")
+        hint.setContentsMargins(12, 2, 12, 2)
         layout.addWidget(hint)
 
-        controls = QHBoxLayout()
+        transport = QFrame(panel)
+        transport.setObjectName("panelFooter")
+        transport_layout = QHBoxLayout(transport)
+        transport_layout.setContentsMargins(12, 6, 12, 6)
+
         self._play_button = QPushButton("Play")
         self._play_button.setEnabled(False)
         self._play_button.clicked.connect(self._toggle_playback)
-        controls.addWidget(self._play_button)
+        _lock_toggle_button_width(self._play_button, "Play", "Pause")
+        transport_layout.addWidget(self._play_button)
 
         self._play_selection_button = QPushButton("Play Selection (Loop)")
         self._play_selection_button.setEnabled(False)
         self._play_selection_button.clicked.connect(self._on_play_selection_clicked)
-        controls.addWidget(self._play_selection_button)
+        _lock_toggle_button_width(self._play_selection_button, "Play Selection (Loop)", "Stop")
+        transport_layout.addWidget(self._play_selection_button)
 
         self._time_label = QLabel("0:00 / 0:00")
-        controls.addWidget(self._time_label)
-        controls.addStretch()
+        self._time_label.setObjectName("clockLabel")
+        transport_layout.addWidget(self._time_label)
 
-        layout.addLayout(controls)
+        transport_layout.addSpacing(8)
 
-        splitter = QSplitter(self)
-        splitter.addWidget(playback_panel)
-        splitter.addWidget(self._build_item_panel())
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        self.setCentralWidget(splitter)
+        split_at_playhead_button = QPushButton("Split at Playhead")
+        split_at_playhead_button.setEnabled(False)
+        split_at_playhead_button.setToolTip(NOT_YET_IMPLEMENTED)
+        transport_layout.addWidget(split_at_playhead_button)
 
-    def _build_item_panel(self) -> QWidget:
-        panel = QWidget(self)
-        layout = QVBoxLayout(panel)
-
-        layout.addWidget(QLabel("Items"))
-
-        self._item_list_widget = QListWidget(panel)
-        self._item_list_widget.currentRowChanged.connect(self._on_current_item_changed)
-        layout.addWidget(self._item_list_widget)
-
-        layout.addWidget(QLabel("Text"))
-        self._item_text_edit = ItemTextEdit(
-            "Type the phrase text for the selected item…", panel
-        )
-        self._item_text_edit.setEnabled(False)
-        self._item_text_edit.setFixedHeight(80)
-        self._item_text_edit.textChanged.connect(self._on_item_text_changed)
-        layout.addWidget(self._item_text_edit)
-
-        self._add_item_button = QPushButton("Add Item")
+        self._add_item_button = QPushButton("Clip from Selection")
         self._add_item_button.setEnabled(False)
         self._add_item_button.setToolTip("Select a region on the waveform (Shift+drag) first")
         self._add_item_button.clicked.connect(self._on_add_item_clicked)
-        layout.addWidget(self._add_item_button)
+        transport_layout.addWidget(self._add_item_button)
 
+        transport_layout.addStretch()
+        transport_layout.addWidget(self._waveform.zoom_bar)
+        layout.addWidget(transport)
+
+        return panel
+
+    def _build_items_panel(self) -> QWidget:
+        panel = QWidget(self)
+        panel.setObjectName("itemsPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame(panel)
+        header.setObjectName("panelHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 4, 12, 4)
+        header_layout.addWidget(self._section_label("Clips"))
+        self._items_count_label = QLabel("0 items")
+        self._items_count_label.setObjectName("metaLabel")
+        header_layout.addWidget(self._items_count_label)
+        header_layout.addStretch()
+        key_hint = QLabel("↑↓ select · ⌫ discard")
+        key_hint.setObjectName("metaLabel")
+        header_layout.addWidget(key_hint)
+        layout.addWidget(header)
+
+        self._item_list_widget = ItemTableWidget(panel)
+        self._item_list_widget.currentCellChanged.connect(
+            lambda row, _col, _prow, _pcol: self._on_current_item_changed(row)
+        )
+        self._item_list_widget.delete_requested.connect(self._on_remove_item_clicked)
+        layout.addWidget(self._item_list_widget, 1)
+
+        footer = QFrame(panel)
+        footer.setObjectName("panelFooter")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(12, 4, 12, 4)
+        self._items_ready_label = QLabel("")
+        self._items_ready_label.setObjectName("metaLabel")
+        footer_layout.addWidget(self._items_ready_label)
+        footer_layout.addStretch()
+        layout.addWidget(footer)
+
+        return panel
+
+    def _build_editor_panel(self) -> QWidget:
+        panel = QWidget(self)
+        panel.setObjectName("editorPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame(panel)
+        header.setObjectName("panelHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 6, 8, 6)
+        title = QLabel("Item")
+        title.setStyleSheet(f"font-weight: 600; color: {theme.TEXT_TITLE};")
+        header_layout.addWidget(title)
+        self._selected_range_label = QLabel("")
+        self._selected_range_label.setObjectName("metaLabel")
+        header_layout.addWidget(self._selected_range_label)
+        header_layout.addStretch()
+        layout.addWidget(header)
+
+        body = QWidget(panel)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(14, 14, 14, 14)
+        body_layout.setSpacing(10)
+
+        body_layout.addWidget(self._section_label("Item Text"))
+        self._item_text_edit = ItemTextEdit(
+            "Type the phrase text for the selected item…", body
+        )
+        self._item_text_edit.setEnabled(False)
+        self._item_text_edit.setFixedHeight(96)
+        self._item_text_edit.textChanged.connect(self._on_item_text_changed)
+        body_layout.addWidget(self._item_text_edit)
+
+        body_layout.addWidget(self._section_label("Audio"))
+        audio_row = QHBoxLayout()
+        self._preview_button = QPushButton("Loop Preview")
+        self._preview_button.clicked.connect(self._on_preview_clicked)
+        _lock_toggle_button_width(self._preview_button, "Loop Preview", "Stop Preview")
+        audio_row.addWidget(self._preview_button)
+        audio_row.addStretch()
+        body_layout.addLayout(audio_row)
+
+        body_layout.addWidget(self._section_label("Reorder"))
         reorder_row = QHBoxLayout()
         self._move_up_button = QPushButton("Move Up")
         self._move_up_button.clicked.connect(self._on_move_item_up)
@@ -151,33 +361,76 @@ class MainWindow(QMainWindow):
         self._move_down_button = QPushButton("Move Down")
         self._move_down_button.clicked.connect(self._on_move_item_down)
         reorder_row.addWidget(self._move_down_button)
-        layout.addLayout(reorder_row)
+        body_layout.addLayout(reorder_row)
 
-        self._preview_button = QPushButton("Loop Preview")
-        self._preview_button.clicked.connect(self._on_preview_clicked)
-        layout.addWidget(self._preview_button)
+        body_layout.addStretch(1)
+        layout.addWidget(body, 1)
 
-        self._remove_item_button = QPushButton("Remove")
+        footer = QFrame(panel)
+        footer.setObjectName("panelFooter")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(10, 6, 10, 6)
+        footer_layout.addStretch()
+        self._remove_item_button = QPushButton("Discard Clip")
+        self._remove_item_button.setObjectName("dangerButton")
         self._remove_item_button.clicked.connect(self._on_remove_item_clicked)
-        layout.addWidget(self._remove_item_button)
+        footer_layout.addWidget(self._remove_item_button)
+        layout.addWidget(footer)
 
         self._update_item_buttons_enabled()
         return panel
 
+    def _build_status_bar(self) -> None:
+        bar = QStatusBar(self)
+        bar.setObjectName("mainStatusBar")
+        self._status_items_label = QLabel("0 items")
+        bar.addWidget(self._status_items_label)
+        self._status_autosave_label = QLabel("")
+        bar.addPermanentWidget(self._status_autosave_label)
+        self.setStatusBar(bar)
+
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("Main", self)
+        toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.addToolBar(toolbar)
 
-        import_action = QAction("Import file…", self)
+        import_action = QAction("Import Audio", self)
         import_action.setShortcut("Ctrl+O")
         import_action.triggered.connect(self._import_file)
         toolbar.addAction(import_action)
+        toolbar.widgetForAction(import_action).setObjectName("primaryToolButton")
 
         record_action = QAction("Record in-app", self)
         record_action.setEnabled(False)
         record_action.setToolTip("Not yet implemented")
         toolbar.addAction(record_action)
+
+        toolbar.addSeparator()
+
+        for text in ("Import Transcript", "Suggest Clips", "Align Transcript"):
+            stub_action = QAction(text, self)
+            stub_action.setEnabled(False)
+            stub_action.setToolTip(NOT_YET_IMPLEMENTED)
+            toolbar.addAction(stub_action)
+
+        spacer = QWidget(self)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+
+        for text in ("Note Template", "Export"):
+            stub_action = QAction(text, self)
+            stub_action.setEnabled(False)
+            stub_action.setToolTip(NOT_YET_IMPLEMENTED)
+            toolbar.addAction(stub_action)
+
+        toolbar.addSeparator()
+
+        preferences_action = QAction("Preferences", self)
+        preferences_action.setEnabled(False)
+        preferences_action.setToolTip(NOT_YET_IMPLEMENTED)
+        toolbar.addAction(preferences_action)
 
     def _import_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import audio file", "", AUDIO_FILE_FILTER)
@@ -228,6 +481,7 @@ class MainWindow(QMainWindow):
         if self._audio_path is None:
             return
         save_session(self._session_path, self._audio_path, self._items)
+        self._status_autosave_label.setText("autosaved")
 
     def _confirm_discard_items(self) -> bool:
         count = len(self._items)
@@ -372,6 +626,13 @@ class MainWindow(QMainWindow):
         finally:
             self._loading_item_text = False
         self._item_text_edit.setEnabled(index >= 0)
+        if index >= 0:
+            clip = self._items[index].clip
+            self._selected_range_label.setText(
+                f"{format_time(clip.start_seconds)}–{format_time(clip.end_seconds)}"
+            )
+        else:
+            self._selected_range_label.setText("")
 
     def _on_item_text_changed(self) -> None:
         if self._loading_item_text:
@@ -381,11 +642,10 @@ class MainWindow(QMainWindow):
             return
         old = self._items[index]
         self._items.replace(index, Item(clip=old.clip, text=self._item_text_edit.toPlainText()))
-        # Update just this row's label in place, rather than a full list
-        # rebuild, so the text edit's cursor position isn't disturbed
-        # mid-keystroke.
-        row_text = self._format_item_row(index, self._items[index])
-        self._item_list_widget.item(index).setText(row_text)
+        # Refresh just this row in place, rather than a full table rebuild,
+        # so the text edit's cursor position isn't disturbed mid-keystroke.
+        self._populate_row(index, self._items[index])
+        self._update_items_meta()
         self._save_session()
 
     def _on_preview_clicked(self) -> None:
@@ -431,23 +691,58 @@ class MainWindow(QMainWindow):
     def _refresh_item_list_widget(self, select_index: int | None = None) -> None:
         if select_index is None:
             select_index = self._item_list_widget.currentRow()
-        self._item_list_widget.clear()
+        self._item_list_widget.setRowCount(len(self._items))
         for i, item in enumerate(self._items):
-            self._item_list_widget.addItem(self._format_item_row(i, item))
+            self._populate_row(i, item)
         if 0 <= select_index < len(self._items):
             self._item_list_widget.setCurrentRow(select_index)
         self._update_item_buttons_enabled()
+        self._update_items_meta()
 
-    def _format_item_row(self, index: int, item: Item) -> str:
+    def _populate_row(self, row: int, item: Item) -> None:
         clip = item.clip
-        time_range = (
+        range_text = (
             f"{format_time(clip.start_seconds)}–{format_time(clip.end_seconds)} "
             f"({format_time(clip.duration_seconds)})"
         )
         preview = item.text.strip().splitlines()[0] if item.text.strip() else "(no text)"
-        if len(preview) > 40:
-            preview = preview[:40] + "…"
-        return f"{index + 1}. {time_range} — {preview}"
+        if len(preview) > 60:
+            preview = preview[:60] + "…"
+        ready = bool(item.text.strip())
+
+        range_item = QTableWidgetItem(range_text)
+        range_item.setFlags(range_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._item_list_widget.setItem(row, RANGE_COLUMN, range_item)
+
+        text_item = QTableWidgetItem(preview)
+        text_item.setFlags(text_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if not ready:
+            text_item.setForeground(QColor(theme.TEXT_DISABLED))
+        self._item_list_widget.setItem(row, TEXT_COLUMN, text_item)
+
+        self._item_list_widget.setCellWidget(row, STATE_COLUMN, self._make_state_badge(ready))
+
+        play_button = QPushButton("▶")
+        play_button.setObjectName("rowPlayButton")
+        play_button.setToolTip("Loop-play this clip")
+        play_button.clicked.connect(lambda _checked=False, r=row: self._on_row_play_clicked(r))
+        self._item_list_widget.setCellWidget(row, PLAY_COLUMN, play_button)
+
+    def _make_state_badge(self, ready: bool) -> QWidget:
+        badge = QLabel("Drafted" if ready else "Not drafted")
+        badge.setObjectName("stateBadge")
+        badge.setProperty("tone", "good" if ready else "hard")
+
+        container = QWidget()
+        container_layout = QHBoxLayout(container)
+        container_layout.setContentsMargins(6, 0, 6, 0)
+        container_layout.addWidget(badge)
+        container_layout.addStretch()
+        return container
+
+    def _on_row_play_clicked(self, row: int) -> None:
+        self._item_list_widget.setCurrentRow(row)
+        self._on_preview_clicked()
 
     def _update_item_buttons_enabled(self) -> None:
         index = self._item_list_widget.currentRow()
@@ -456,6 +751,17 @@ class MainWindow(QMainWindow):
         self._preview_button.setEnabled(has_selection)
         self._move_up_button.setEnabled(has_selection and index > 0)
         self._move_down_button.setEnabled(has_selection and index < len(self._items) - 1)
+
+    def _update_items_meta(self) -> None:
+        count = len(self._items)
+        drafted = sum(1 for item in self._items if item.text.strip())
+        not_drafted = count - drafted
+        label = "1 item" if count == 1 else f"{count} items"
+        self._items_count_label.setText(label)
+        self._items_ready_label.setText(
+            f"{drafted} drafted · {not_drafted} not drafted" if count else ""
+        )
+        self._status_items_label.setText(label)
 
     def _update_item_regions(self) -> None:
         self._waveform.set_clip_regions(self._items.regions())

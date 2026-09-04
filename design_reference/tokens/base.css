@@ -1,0 +1,6 @@
+body{margin:0;background:var(--surface-app);color:var(--text-body);font-family:var(--font-ui);font-size:var(--text-ui);line-height:var(--lh-ui);-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:var(--text-link);text-decoration:none;border-bottom:1px solid color-mix(in oklch,var(--text-link) 35%,transparent)}
+a:hover{color:var(--cyprus-600);border-bottom-color:var(--cyprus-600)}
+::selection{background:var(--highlight-bg);color:var(--ink-0)}
+:focus-visible{outline:none;box-shadow:var(--focus-ring)}

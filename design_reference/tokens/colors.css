@@ -1,0 +1,48 @@
+:root{
+/* Paper — warm neutral surfaces, lightest to deepest */
+--paper-0:#ffffff;--paper-1:#faf7f0;--paper-2:#f3ede1;--paper-3:#e9e0cf;--paper-4:#ddd2bd;
+/* Ink — text and strokes */
+--ink-0:#14120f;--ink-1:#2a2723;--ink-2:#57514a;--ink-3:#8a8279;--ink-4:#b3aa9e;--ink-5:#d5ccbe;
+/* Cyprus — primary accent, the app's "action" colour */
+--cyprus-700:#093c39;--cyprus-600:#0a4642;--cyprus-500:#0f5c57;--cyprus-400:#197a73;--cyprus-300:#5aa39c;--cyprus-100:#dcebe9;--cyprus-050:#eef6f5;
+/* Highlighter — the mining motif: marked words in source material */
+--marker-500:#f2c230;--marker-400:#f7d566;--marker-200:#fbeac0;--marker-100:#fdf4de;
+/* Semantics — review grades map onto these */
+--grade-good:#2e7d4f;--grade-good-100:#dff0e5;
+--grade-hard:#b07515;--grade-hard-100:#f8ebd2;
+--grade-again:#b4432b;--grade-again-100:#f7e2dc;
+--grade-new:#3b6fb0;--grade-new-100:#e1eaf6;
+
+/* ── Semantic aliases (use these in components) ── */
+--surface-app:var(--paper-1);
+--surface-card:var(--paper-0);
+--surface-sunken:var(--paper-2);
+--surface-rail:var(--paper-2);
+--surface-hover:rgb(20 18 15 / .04);
+--surface-active:rgb(20 18 15 / .08);
+--surface-selected:var(--cyprus-050);
+--surface-inverse:var(--ink-0);
+--surface-scrim:rgb(20 18 15 / .38);
+
+--text-title:var(--ink-0);
+--text-body:var(--ink-1);
+--text-muted:var(--ink-2);
+--text-subtle:var(--ink-3);
+--text-disabled:var(--ink-4);
+--text-inverse:var(--paper-1);
+--text-link:var(--cyprus-500);
+--text-accent:var(--cyprus-500);
+
+--border-hairline:var(--ink-5);
+--border-strong:var(--ink-4);
+--border-field:var(--paper-4);
+--border-focus:var(--cyprus-400);
+
+--action-primary:var(--cyprus-500);
+--action-primary-hover:var(--cyprus-600);
+--action-primary-press:var(--cyprus-700);
+--action-danger:var(--grade-again);
+
+--highlight-bg:var(--marker-200);
+--highlight-edge:var(--marker-500);
+}

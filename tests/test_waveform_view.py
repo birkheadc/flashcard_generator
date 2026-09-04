@@ -170,10 +170,10 @@ def test_autoscroll_does_nothing_at_fit_zoom(qtbot):
 def test_ctrl_wheel_zooms_in_and_out(qtbot):
     view = _ready_view(qtbot)
 
-    view.eventFilter(view._waveform, _wheel_event(x=50, delta_y=120, ctrl=True))
+    view._scroll_area.wheelEvent(_wheel_event(x=50, delta_y=120, ctrl=True))
     assert view._zoom == pytest.approx(MIN_ZOOM + ZOOM_STEP)
 
-    view.eventFilter(view._waveform, _wheel_event(x=50, delta_y=-120, ctrl=True))
+    view._scroll_area.wheelEvent(_wheel_event(x=50, delta_y=-120, ctrl=True))
     assert view._zoom == pytest.approx(MIN_ZOOM)
 
 
@@ -216,7 +216,10 @@ def test_set_clip_regions_delegates_to_inner_widget(qtbot):
     assert view._waveform._clip_regions == [(1.0, 2.0)]
 
 
-def test_plain_wheel_scrolls_horizontally_when_zoomed(qtbot):
+def test_plain_vertical_wheel_does_not_pan(qtbot):
+    # Spinning a normal mouse wheel (vertical delta only) must NOT shove
+    # the timeline sideways — that was surprising, unwanted behavior.
+    # Only genuinely horizontal input (see the test below) should pan.
     view = _ready_view(qtbot)
     for _ in range(8):  # enough steps to give the scrollbar plenty of range
         view._on_zoom_in()
@@ -224,6 +227,32 @@ def test_plain_wheel_scrolls_horizontally_when_zoomed(qtbot):
     bar.setValue(bar.maximum() // 2)
     start = bar.value()
 
-    view.eventFilter(view._ruler, _wheel_event(x=50, delta_y=-120, ctrl=False))
+    view._scroll_area.wheelEvent(_wheel_event(x=50, delta_y=-120, ctrl=False))
+
+    assert bar.value() == start
+
+
+def test_horizontal_wheel_input_pans(qtbot):
+    # A horizontal trackpad swipe, or the OS's own shift+wheel convention
+    # (which typically arrives as a horizontal delta already) — either
+    # way, genuinely horizontal input should pan the timeline.
+    view = _ready_view(qtbot)
+    for _ in range(8):
+        view._on_zoom_in()
+    bar = view._scroll_area.horizontalScrollBar()
+    bar.setValue(bar.maximum() // 2)
+    start = bar.value()
+
+    event = QWheelEvent(
+        QPointF(50, 10),
+        QPointF(50, 10),
+        QPoint(0, 0),
+        QPoint(-120, 0),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    view._scroll_area.wheelEvent(event)
 
     assert bar.value() == start + 120

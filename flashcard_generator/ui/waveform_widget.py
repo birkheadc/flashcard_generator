@@ -5,6 +5,7 @@ from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..audio.waveform import WaveformData
+from . import theme
 
 # Pixel tolerance for grabbing the edge of the current selection or an
 # existing clip region to resize it, rather than starting something new.
@@ -94,7 +95,7 @@ class WaveformWidget(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#1e1e1e"))
+        painter.fillRect(self.rect(), QColor(theme.PAPER_0))
 
         width = self.width()
         height = self.height()
@@ -102,20 +103,20 @@ class WaveformWidget(QWidget):
 
         if self._duration_seconds > 0 and width > 0:
             for start, end in self._clip_regions:
-                self._fill_time_range(painter, start, end, height, QColor(76, 175, 80, 70))
+                self._fill_time_range(painter, start, end, height, QColor(15, 92, 87, 35))
             if self._selection is not None:
                 self._fill_time_range(
-                    painter, self._selection[0], self._selection[1], height, QColor(255, 235, 59, 60)
+                    painter, self._selection[0], self._selection[1], height, QColor(200, 85, 61, 45)
                 )
 
-        painter.setPen(QPen(QColor("#3a3a3a")))
+        painter.setPen(QPen(QColor(theme.INK_5)))
         painter.drawLine(0, int(mid_y), width, int(mid_y))
 
         if self._data is not None and width > 0:
             peaks_min = self._data.peaks_min
             peaks_max = self._data.peaks_max
             num_columns = len(peaks_min)
-            painter.setPen(QPen(QColor("#4fc3f7")))
+            painter.setPen(QPen(QColor(theme.ACCENT)))
             # Only draw the columns Qt actually asked us to repaint. At high
             # zoom this widget can be far wider than the visible viewport, so
             # painting the full width on every playhead update would scale
@@ -132,7 +133,7 @@ class WaveformWidget(QWidget):
         if self._duration_seconds > 0 and width > 0 and self._data is not None:
             fraction = min(max(self._position_seconds / self._duration_seconds, 0.0), 1.0)
             playhead_x = int(fraction * width)
-            painter.setPen(QPen(QColor("#ff5252"), 2))
+            painter.setPen(QPen(QColor(theme.INK_0), 2))
             painter.drawLine(playhead_x, 0, playhead_x, height)
 
         painter.end()

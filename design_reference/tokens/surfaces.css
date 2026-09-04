@@ -1,0 +1,13 @@
+:root{
+--radius-0:0;--radius-1:3px;--radius-2:5px;--radius-3:7px;--radius-4:10px;--radius-pill:999px;
+
+--border-width:1px;--border-width-strong:2px;
+
+/* Shadows stay shallow — this is app chrome, not a web page */
+--shadow-hairline:0 0 0 1px var(--border-hairline);
+--shadow-raise:0 1px 1px rgb(20 18 15 / .05),0 1px 3px rgb(20 18 15 / .06);
+--shadow-pop:0 4px 10px rgb(20 18 15 / .10),0 1px 2px rgb(20 18 15 / .08);
+--shadow-modal:0 18px 44px rgb(20 18 15 / .22),0 2px 6px rgb(20 18 15 / .12);
+--shadow-inset-field:inset 0 1px 0 rgb(20 18 15 / .05);
+--focus-ring:0 0 0 2px var(--cyprus-100),0 0 0 3px var(--cyprus-400);
+}

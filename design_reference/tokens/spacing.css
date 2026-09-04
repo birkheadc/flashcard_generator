@@ -1,0 +1,12 @@
+:root{
+--space-px:1px;--space-0:0;--space-1:2px;--space-2:4px;--space-3:6px;--space-4:8px;
+--space-5:12px;--space-6:16px;--space-7:20px;--space-8:24px;--space-9:32px;
+--space-10:40px;--space-11:56px;--space-12:72px;
+
+/* Fixed desktop chrome */
+--rail-width:236px;--rail-width-collapsed:52px;
+--titlebar-height:38px;--toolbar-height:44px;--statusbar-height:26px;
+--inspector-width:300px;
+--control-height-sm:24px;--control-height:28px;--control-height-lg:34px;
+--reading-measure:62ch;
+}

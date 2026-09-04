@@ -1,24 +1,27 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from ..audio.waveform import WaveformData
+from . import theme
 from .format_time import format_time
 from .waveform_widget import WaveformWidget
 
 MIN_ZOOM = 1.0
 MAX_ZOOM = 64.0
 ZOOM_STEP = 0.25  # flat increment per step (25% of MIN_ZOOM), not a multiplier
+ZOOM_SLIDER_RESOLUTION = 1000  # slider's own int range; independent of ZOOM_STEP
 
 RULER_HEIGHT = 24
 
@@ -66,7 +69,7 @@ class TimeRulerWidget(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#252525"))
+        painter.fillRect(self.rect(), QColor(theme.PAPER_1))
 
         width = self.width()
         height = self.height()
@@ -75,7 +78,8 @@ class TimeRulerWidget(QWidget):
             pixels_per_second = width / self._duration_seconds
             interval = _nice_tick_interval(pixels_per_second)
 
-            painter.setPen(QPen(QColor("#9a9a9a")))
+            painter.setPen(QPen(QColor(theme.TEXT_DISABLED)))
+            metrics = QFontMetrics(painter.font())
             tick_count = int(self._duration_seconds / interval) + 2
             for i in range(tick_count):
                 t = i * interval
@@ -84,14 +88,66 @@ class TimeRulerWidget(QWidget):
                 x = int(t * pixels_per_second)
                 painter.drawLine(x, height - 6, x, height)
                 label = f"{t:.1f}s" if interval < 1 else format_time(t)
-                painter.drawText(x + 3, height - 8, label)
+                # Centered directly above its tick; skipped rather than
+                # clamped if that would run the label off either edge.
+                label_x = x - metrics.horizontalAdvance(label) // 2
+                if label_x >= 0 and label_x + metrics.horizontalAdvance(label) <= width:
+                    painter.drawText(label_x, height - 8, label)
 
             fraction = min(max(self._position_seconds / self._duration_seconds, 0.0), 1.0)
             playhead_x = int(fraction * width)
-            painter.setPen(QPen(QColor("#ff5252"), 2))
+            painter.setPen(QPen(QColor(theme.INK_0), 2))
             painter.drawLine(playhead_x, 0, playhead_x, height)
 
         painter.end()
+
+
+class _HorizontalScrollArea(QScrollArea):
+    """A QScrollArea for timeline content: genuinely horizontal wheel input
+    (a horizontal trackpad swipe, or the OS's own shift+wheel convention,
+    which typically arrives as a horizontal delta already) pans sideways.
+    Ctrl+wheel requests a zoom instead of scrolling.
+
+    Plain *vertical* wheel input is deliberately left alone rather than
+    remapped to horizontal panning — spinning a normal mouse wheel
+    shouldn't shove the timeline sideways. It falls through to the
+    default QScrollArea behavior, which scrolls vertically if this view
+    ever actually has something to scroll to there (normally it doesn't —
+    content is sized to fill the viewport's height) and otherwise no-ops.
+
+    Overriding wheelEvent directly here — rather than installing an event
+    filter on specific child widgets — means every wheel event that
+    bubbles up through this scroll area is covered (any child widget that
+    doesn't itself handle wheelEvent, like the plain QWidget-based ruler
+    and waveform canvas, ignores it by default and Qt bubbles it up to
+    here), not just events landing on the one or two widgets we thought to
+    filter.
+    """
+
+    zoom_requested = Signal(float, float)  # (direction: +1/-1, anchor_fraction 0..1)
+
+    def wheelEvent(self, event) -> None:  # noqa: ANN001 - Qt override signature
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y() or event.angleDelta().x()
+            if delta == 0:
+                delta = event.pixelDelta().y() or event.pixelDelta().x()
+            if delta == 0:
+                event.ignore()
+                return
+            content = self.widget()
+            content_width = content.width() if content else 0
+            anchor_fraction = event.position().x() / content_width if content_width else 0.0
+            self.zoom_requested.emit(1.0 if delta > 0 else -1.0, anchor_fraction)
+            event.accept()
+            return
+
+        horizontal_delta = event.angleDelta().x() or event.pixelDelta().x()
+        if horizontal_delta == 0:
+            super().wheelEvent(event)
+            return
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.value() - horizontal_delta)
+        event.accept()
 
 
 class WaveformView(QWidget):
@@ -114,35 +170,18 @@ class WaveformView(QWidget):
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
 
-        toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Zoom:"))
+        # Built here (so it shares zoom state/logic with the rest of this
+        # widget) but deliberately *not* added to outer_layout — the caller
+        # embeds `self.zoom_bar` whererever it belongs in its own layout
+        # (the transport row under the waveform, per the design), rather
+        # than it always sitting in its own row above the ruler.
+        self.zoom_bar = self._build_zoom_bar()
 
-        self._zoom_out_button = QPushButton("−")
-        self._zoom_out_button.setFixedWidth(28)
-        self._zoom_out_button.setToolTip("Zoom out")
-        self._zoom_out_button.clicked.connect(self._on_zoom_out)
-        toolbar.addWidget(self._zoom_out_button)
-
-        self._zoom_in_button = QPushButton("+")
-        self._zoom_in_button.setFixedWidth(28)
-        self._zoom_in_button.setToolTip("Zoom in")
-        self._zoom_in_button.clicked.connect(self._on_zoom_in)
-        toolbar.addWidget(self._zoom_in_button)
-
-        self._zoom_fit_button = QPushButton("Fit")
-        self._zoom_fit_button.setToolTip("Reset zoom to fit the whole file")
-        self._zoom_fit_button.clicked.connect(self._on_zoom_fit)
-        toolbar.addWidget(self._zoom_fit_button)
-
-        self._zoom_label = QLabel("100%")
-        toolbar.addWidget(self._zoom_label)
-        toolbar.addStretch()
-        outer_layout.addLayout(toolbar)
-
-        self._scroll_area = QScrollArea(self)
+        self._scroll_area = _HorizontalScrollArea(self)
         self._scroll_area.setWidgetResizable(False)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area.zoom_requested.connect(self._on_zoom_wheel)
         outer_layout.addWidget(self._scroll_area)
 
         self._content = QWidget()
@@ -158,8 +197,17 @@ class WaveformView(QWidget):
 
         self._scroll_area.setWidget(self._content)
 
-        # Ctrl+wheel zooms (anchored on the cursor); plain wheel scrolls
-        # horizontally, since there's nothing to scroll vertically here.
+        # Qt is supposed to bubble an ignored wheel event up from a plain
+        # QWidget (the ruler, the waveform canvas — neither overrides
+        # wheelEvent, so both ignore it by default) to its QScrollArea
+        # ancestor, which is what would normally reach
+        # _HorizontalScrollArea.wheelEvent on its own. That bubbling lives
+        # in the platform windowing dispatch path though, not in
+        # QCoreApplication::notify — it doesn't fire for a directly
+        # sendEvent()-ed wheel event, and isn't worth trusting blindly
+        # across Qt/platform versions either. Filtering these two widgets
+        # explicitly and forwarding to the same handler removes that
+        # uncertainty rather than relying on bubbling actually happening.
         self._waveform.installEventFilter(self)
         self._ruler.installEventFilter(self)
 
@@ -177,6 +225,49 @@ class WaveformView(QWidget):
 
         self._update_buttons_enabled()
 
+    def _build_zoom_bar(self) -> QWidget:
+        bar = QWidget(self)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        caption = QLabel(theme.section_label_text("Zoom"), bar)
+        caption.setObjectName("sectionLabel")
+        row.addWidget(caption)
+
+        self._zoom_out_button = QPushButton("−", bar)
+        self._zoom_out_button.setObjectName("zoomStepButton")
+        self._zoom_out_button.setFixedSize(22, 22)
+        self._zoom_out_button.setToolTip("Zoom out")
+        self._zoom_out_button.clicked.connect(self._on_zoom_out)
+        row.addWidget(self._zoom_out_button)
+
+        self._zoom_slider = QSlider(Qt.Orientation.Horizontal, bar)
+        self._zoom_slider.setFixedWidth(96)
+        self._zoom_slider.setRange(0, ZOOM_SLIDER_RESOLUTION)
+        self._zoom_slider.setValue(self._zoom_to_slider_value(MIN_ZOOM))
+        self._zoom_slider.valueChanged.connect(self._on_zoom_slider_changed)
+        row.addWidget(self._zoom_slider)
+
+        self._zoom_in_button = QPushButton("+", bar)
+        self._zoom_in_button.setObjectName("zoomStepButton")
+        self._zoom_in_button.setFixedSize(22, 22)
+        self._zoom_in_button.setToolTip("Zoom in")
+        self._zoom_in_button.clicked.connect(self._on_zoom_in)
+        row.addWidget(self._zoom_in_button)
+
+        self._zoom_fit_button = QPushButton("Fit", bar)
+        self._zoom_fit_button.setToolTip("Reset zoom to fit the whole file")
+        self._zoom_fit_button.clicked.connect(self._on_zoom_fit)
+        row.addWidget(self._zoom_fit_button)
+
+        self._zoom_label = QLabel("100%", bar)
+        self._zoom_label.setObjectName("metaLabel")
+        self._zoom_label.setFixedWidth(38)
+        row.addWidget(self._zoom_label)
+
+        return bar
+
     # -- public API, mirrors the plain WaveformWidget's -------------------
 
     def set_waveform(self, data: WaveformData | None) -> None:
@@ -185,6 +276,7 @@ class WaveformView(QWidget):
         self._ruler.set_duration(self._duration_seconds)
         self._zoom = MIN_ZOOM
         self._zoom_label.setText("100%")
+        self._sync_zoom_slider()
         self._relayout_content()
         self._scroll_area.horizontalScrollBar().setValue(0)
         self._update_buttons_enabled()
@@ -220,6 +312,25 @@ class WaveformView(QWidget):
     def _on_zoom_fit(self) -> None:
         self._set_zoom(MIN_ZOOM)
 
+    def _on_zoom_wheel(self, direction: float, anchor_fraction: float) -> None:
+        self._set_zoom(self._zoom + direction * ZOOM_STEP, anchor_fraction=anchor_fraction)
+
+    def _zoom_to_slider_value(self, zoom: float) -> int:
+        fraction = (zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)
+        return round(fraction * ZOOM_SLIDER_RESOLUTION)
+
+    def _slider_value_to_zoom(self, value: int) -> float:
+        fraction = value / ZOOM_SLIDER_RESOLUTION
+        return MIN_ZOOM + fraction * (MAX_ZOOM - MIN_ZOOM)
+
+    def _sync_zoom_slider(self) -> None:
+        self._zoom_slider.blockSignals(True)
+        self._zoom_slider.setValue(self._zoom_to_slider_value(self._zoom))
+        self._zoom_slider.blockSignals(False)
+
+    def _on_zoom_slider_changed(self, value: int) -> None:
+        self._set_zoom(self._slider_value_to_zoom(value))
+
     def _set_zoom(self, zoom: float, anchor_fraction: float | None = None) -> None:
         zoom = min(max(zoom, MIN_ZOOM), MAX_ZOOM)
         if zoom == self._zoom:
@@ -228,6 +339,7 @@ class WaveformView(QWidget):
             anchor_fraction = self._visible_center_fraction()
         self._zoom = zoom
         self._zoom_label.setText(f"{round(zoom * 100)}%")
+        self._sync_zoom_slider()
         self._relayout_content()
         self._scroll_to_fraction(anchor_fraction)
         self._update_buttons_enabled()
@@ -287,23 +399,11 @@ class WaveformView(QWidget):
             target = round(x - viewport_width / 2)
             bar.setValue(max(0, min(target, bar.maximum())))
 
-    # -- ctrl+wheel zoom, plain wheel horizontal scroll ------------------
-
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001 - Qt override signature
         if event.type() == QEvent.Type.Wheel and obj in (self._waveform, self._ruler):
-            self._handle_wheel(event)
+            self._scroll_area.wheelEvent(event)
             return True
         if event.type() == QEvent.Type.Resize and obj is self._scroll_area.viewport():
             self._relayout_content()
             return False
         return super().eventFilter(obj, event)
-
-    def _handle_wheel(self, event) -> None:  # noqa: ANN001 - QWheelEvent
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            content_width = self._content.width()
-            anchor_fraction = event.position().x() / content_width if content_width else 0.0
-            delta = ZOOM_STEP if event.angleDelta().y() > 0 else -ZOOM_STEP
-            self._set_zoom(self._zoom + delta, anchor_fraction=anchor_fraction)
-        else:
-            bar = self._scroll_area.horizontalScrollBar()
-            bar.setValue(bar.value() - event.angleDelta().y())
