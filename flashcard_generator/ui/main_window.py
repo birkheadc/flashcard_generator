@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSplitter,
     QToolBar,
@@ -20,7 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..audio.waveform import AudioTooLongError, compute_waveform
-from ..clips import Clip, ClipList
+from ..clips import Clip
+from ..items import Item, ItemList
 from .format_time import format_time
 from .waveform_view import WaveformView
 
@@ -45,11 +47,12 @@ class MainWindow(QMainWindow):
         self._player.errorOccurred.connect(self._on_player_error)
 
         self._duration_ms = 0
-        self._clips = ClipList()
+        self._items = ItemList()
         self._pending_selection: tuple[float, float] | None = None
         self._loop_range: tuple[float, float] | None = None
-        self._loop_source: str | None = None  # "clip" | "selection" | None
-        self._loop_clip_index: int | None = None
+        self._loop_source: str | None = None  # "item" | "selection" | None
+        self._loop_item_index: int | None = None
+        self._loading_item_text = False
 
         self._build_ui()
         self._build_toolbar()
@@ -61,7 +64,7 @@ class MainWindow(QMainWindow):
         self._waveform = WaveformView(playback_panel)
         self._waveform.seek_requested.connect(self._seek_to_seconds)
         self._waveform.selection_changed.connect(self._on_selection_changed)
-        self._waveform.clip_region_edited.connect(self._on_clip_region_edited)
+        self._waveform.clip_region_edited.connect(self._on_item_region_edited)
         layout.addWidget(self._waveform)
 
         hint = QLabel("Shift+drag to select a region · drag a region's edge to resize it")
@@ -87,33 +90,41 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(self)
         splitter.addWidget(playback_panel)
-        splitter.addWidget(self._build_clip_panel())
+        splitter.addWidget(self._build_item_panel())
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
         self.setCentralWidget(splitter)
 
-    def _build_clip_panel(self) -> QWidget:
+    def _build_item_panel(self) -> QWidget:
         panel = QWidget(self)
         layout = QVBoxLayout(panel)
 
-        layout.addWidget(QLabel("Clips"))
+        layout.addWidget(QLabel("Items"))
 
-        self._clip_list_widget = QListWidget(panel)
-        self._clip_list_widget.currentRowChanged.connect(self._update_clip_buttons_enabled)
-        layout.addWidget(self._clip_list_widget)
+        self._item_list_widget = QListWidget(panel)
+        self._item_list_widget.currentRowChanged.connect(self._on_current_item_changed)
+        layout.addWidget(self._item_list_widget)
 
-        self._add_clip_button = QPushButton("Add Clip")
-        self._add_clip_button.setEnabled(False)
-        self._add_clip_button.setToolTip("Select a region on the waveform (Shift+drag) first")
-        self._add_clip_button.clicked.connect(self._on_add_clip_clicked)
-        layout.addWidget(self._add_clip_button)
+        layout.addWidget(QLabel("Text"))
+        self._item_text_edit = QPlainTextEdit(panel)
+        self._item_text_edit.setPlaceholderText("Type the phrase text for the selected item…")
+        self._item_text_edit.setEnabled(False)
+        self._item_text_edit.setFixedHeight(80)
+        self._item_text_edit.textChanged.connect(self._on_item_text_changed)
+        layout.addWidget(self._item_text_edit)
+
+        self._add_item_button = QPushButton("Add Item")
+        self._add_item_button.setEnabled(False)
+        self._add_item_button.setToolTip("Select a region on the waveform (Shift+drag) first")
+        self._add_item_button.clicked.connect(self._on_add_item_clicked)
+        layout.addWidget(self._add_item_button)
 
         reorder_row = QHBoxLayout()
         self._move_up_button = QPushButton("Move Up")
-        self._move_up_button.clicked.connect(self._on_move_clip_up)
+        self._move_up_button.clicked.connect(self._on_move_item_up)
         reorder_row.addWidget(self._move_up_button)
         self._move_down_button = QPushButton("Move Down")
-        self._move_down_button.clicked.connect(self._on_move_clip_down)
+        self._move_down_button.clicked.connect(self._on_move_item_down)
         reorder_row.addWidget(self._move_down_button)
         layout.addLayout(reorder_row)
 
@@ -121,11 +132,11 @@ class MainWindow(QMainWindow):
         self._preview_button.clicked.connect(self._on_preview_clicked)
         layout.addWidget(self._preview_button)
 
-        self._remove_clip_button = QPushButton("Remove")
-        self._remove_clip_button.clicked.connect(self._on_remove_clip_clicked)
-        layout.addWidget(self._remove_clip_button)
+        self._remove_item_button = QPushButton("Remove")
+        self._remove_item_button.clicked.connect(self._on_remove_item_clicked)
+        layout.addWidget(self._remove_item_button)
 
-        self._update_clip_buttons_enabled()
+        self._update_item_buttons_enabled()
         return panel
 
     def _build_toolbar(self) -> None:
@@ -150,7 +161,7 @@ class MainWindow(QMainWindow):
         self._load_audio_file(path)
 
     def _load_audio_file(self, path: str) -> None:
-        if len(self._clips) > 0 and not self._confirm_discard_clips():
+        if len(self._items) > 0 and not self._confirm_discard_items():
             return
 
         try:
@@ -169,21 +180,21 @@ class MainWindow(QMainWindow):
 
         self._player.stop()
         self._stop_loop()
-        self._clips.clear()
-        self._refresh_clip_list_widget()
+        self._items.clear()
+        self._refresh_item_list_widget()
         self._waveform.set_waveform(waveform_data)
-        self._update_clip_regions()
+        self._update_item_regions()
         self._player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
         self._play_button.setEnabled(True)
         self.setWindowTitle(f"Flashcard Generator — {Path(path).name}")
 
-    def _confirm_discard_clips(self) -> bool:
-        count = len(self._clips)
+    def _confirm_discard_items(self) -> bool:
+        count = len(self._items)
         plural = "" if count == 1 else "s"
         choice = QMessageBox.warning(
             self,
-            "Discard clips?",
-            f"Loading a new file will discard the {count} clip{plural} you've "
+            "Discard items?",
+            f"Loading a new file will discard the {count} item{plural} you've "
             "created for the current file.\n\nContinue anyway?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -247,11 +258,11 @@ class MainWindow(QMainWindow):
         if error != QMediaPlayer.Error.NoError:
             QMessageBox.critical(self, "Playback error", error_string)
 
-    # -- clips ----------------------------------------------------------
+    # -- items ------------------------------------------------------------
 
     def _on_selection_changed(self, selection: tuple[float, float] | None) -> None:
         self._pending_selection = selection
-        self._add_clip_button.setEnabled(selection is not None)
+        self._add_item_button.setEnabled(selection is not None)
         self._play_selection_button.setEnabled(selection is not None)
         if self._loop_source == "selection":
             if selection is None:
@@ -259,63 +270,87 @@ class MainWindow(QMainWindow):
             else:
                 self._loop_range = selection
 
-    def _on_add_clip_clicked(self) -> None:
+    def _on_add_item_clicked(self) -> None:
         if self._pending_selection is None:
             return
         start, end = self._pending_selection
-        self._clips.add(Clip(start_seconds=start, end_seconds=end))
+        self._items.add(Item(clip=Clip(start_seconds=start, end_seconds=end)))
         self._waveform.clear_selection()
-        self._refresh_clip_list_widget(select_index=len(self._clips) - 1)
-        self._update_clip_regions()
+        self._refresh_item_list_widget(select_index=len(self._items) - 1)
+        self._update_item_regions()
 
-    def _on_remove_clip_clicked(self) -> None:
-        index = self._clip_list_widget.currentRow()
+    def _on_remove_item_clicked(self) -> None:
+        index = self._item_list_widget.currentRow()
         if index < 0:
             return
-        if self._loop_source == "clip":
+        if self._loop_source == "item":
             self._stop_loop()
-        self._clips.remove(index)
-        self._refresh_clip_list_widget()
-        self._update_clip_regions()
+        self._items.remove(index)
+        self._refresh_item_list_widget()
+        self._update_item_regions()
 
-    def _on_move_clip_up(self) -> None:
-        index = self._clip_list_widget.currentRow()
+    def _on_move_item_up(self) -> None:
+        index = self._item_list_widget.currentRow()
         if index <= 0:
             return
-        if self._loop_source == "clip":
+        if self._loop_source == "item":
             self._stop_loop()
-        self._clips.move(index, index - 1)
-        self._refresh_clip_list_widget(select_index=index - 1)
-        self._update_clip_regions()
+        self._items.move(index, index - 1)
+        self._refresh_item_list_widget(select_index=index - 1)
+        self._update_item_regions()
 
-    def _on_move_clip_down(self) -> None:
-        index = self._clip_list_widget.currentRow()
-        if index < 0 or index >= len(self._clips) - 1:
+    def _on_move_item_down(self) -> None:
+        index = self._item_list_widget.currentRow()
+        if index < 0 or index >= len(self._items) - 1:
             return
-        if self._loop_source == "clip":
+        if self._loop_source == "item":
             self._stop_loop()
-        self._clips.move(index, index + 1)
-        self._refresh_clip_list_widget(select_index=index + 1)
-        self._update_clip_regions()
+        self._items.move(index, index + 1)
+        self._refresh_item_list_widget(select_index=index + 1)
+        self._update_item_regions()
 
-    def _on_clip_region_edited(self, index: int, start: float, end: float) -> None:
-        old = self._clips[index]
-        self._clips.replace(index, Clip(start_seconds=start, end_seconds=end, label=old.label))
-        if self._loop_source == "clip" and self._loop_clip_index == index:
+    def _on_item_region_edited(self, index: int, start: float, end: float) -> None:
+        old = self._items[index]
+        new_clip = Clip(start_seconds=start, end_seconds=end)
+        self._items.replace(index, Item(clip=new_clip, text=old.text))
+        if self._loop_source == "item" and self._loop_item_index == index:
             self._loop_range = (start, end)
-        self._refresh_clip_list_widget()
-        self._update_clip_regions()
+        self._refresh_item_list_widget()
+        self._update_item_regions()
 
-    def _on_preview_clicked(self) -> None:
-        index = self._clip_list_widget.currentRow()
+    def _on_current_item_changed(self, index: int) -> None:
+        self._update_item_buttons_enabled()
+        self._loading_item_text = True
+        try:
+            self._item_text_edit.setPlainText(self._items[index].text if index >= 0 else "")
+        finally:
+            self._loading_item_text = False
+        self._item_text_edit.setEnabled(index >= 0)
+
+    def _on_item_text_changed(self) -> None:
+        if self._loading_item_text:
+            return
+        index = self._item_list_widget.currentRow()
         if index < 0:
             return
-        if self._loop_source == "clip" and self._loop_clip_index == index:
+        old = self._items[index]
+        self._items.replace(index, Item(clip=old.clip, text=self._item_text_edit.toPlainText()))
+        # Update just this row's label in place, rather than a full list
+        # rebuild, so the text edit's cursor position isn't disturbed
+        # mid-keystroke.
+        row_text = self._format_item_row(index, self._items[index])
+        self._item_list_widget.item(index).setText(row_text)
+
+    def _on_preview_clicked(self) -> None:
+        index = self._item_list_widget.currentRow()
+        if index < 0:
+            return
+        if self._loop_source == "item" and self._loop_item_index == index:
             self._stop_loop()
             return
-        clip = self._clips[index]
-        self._loop_clip_index = index
-        self._start_loop((clip.start_seconds, clip.end_seconds), source="clip")
+        item = self._items[index]
+        self._loop_item_index = index
+        self._start_loop((item.clip.start_seconds, item.clip.end_seconds), source="item")
 
     def _on_play_selection_clicked(self) -> None:
         if self._loop_source == "selection":
@@ -331,7 +366,7 @@ class MainWindow(QMainWindow):
         self._loop_source = source
         self._player.setPosition(int(loop_range[0] * 1000))
         self._player.play()
-        self._preview_button.setText("Stop Preview" if source == "clip" else "Loop Preview")
+        self._preview_button.setText("Stop Preview" if source == "item" else "Loop Preview")
         self._play_selection_button.setText(
             "Stop" if source == "selection" else "Play Selection (Loop)"
         )
@@ -341,32 +376,39 @@ class MainWindow(QMainWindow):
             return
         self._loop_range = None
         self._loop_source = None
-        self._loop_clip_index = None
+        self._loop_item_index = None
         self._player.pause()
         self._preview_button.setText("Loop Preview")
         self._play_selection_button.setText("Play Selection (Loop)")
 
-    def _refresh_clip_list_widget(self, select_index: int | None = None) -> None:
+    def _refresh_item_list_widget(self, select_index: int | None = None) -> None:
         if select_index is None:
-            select_index = self._clip_list_widget.currentRow()
-        self._clip_list_widget.clear()
-        for i, clip in enumerate(self._clips):
-            text = (
-                f"{i + 1}. {format_time(clip.start_seconds)}–{format_time(clip.end_seconds)} "
-                f"({format_time(clip.duration_seconds)})"
-            )
-            self._clip_list_widget.addItem(text)
-        if 0 <= select_index < len(self._clips):
-            self._clip_list_widget.setCurrentRow(select_index)
-        self._update_clip_buttons_enabled()
+            select_index = self._item_list_widget.currentRow()
+        self._item_list_widget.clear()
+        for i, item in enumerate(self._items):
+            self._item_list_widget.addItem(self._format_item_row(i, item))
+        if 0 <= select_index < len(self._items):
+            self._item_list_widget.setCurrentRow(select_index)
+        self._update_item_buttons_enabled()
 
-    def _update_clip_buttons_enabled(self) -> None:
-        index = self._clip_list_widget.currentRow()
+    def _format_item_row(self, index: int, item: Item) -> str:
+        clip = item.clip
+        time_range = (
+            f"{format_time(clip.start_seconds)}–{format_time(clip.end_seconds)} "
+            f"({format_time(clip.duration_seconds)})"
+        )
+        preview = item.text.strip().splitlines()[0] if item.text.strip() else "(no text)"
+        if len(preview) > 40:
+            preview = preview[:40] + "…"
+        return f"{index + 1}. {time_range} — {preview}"
+
+    def _update_item_buttons_enabled(self) -> None:
+        index = self._item_list_widget.currentRow()
         has_selection = index >= 0
-        self._remove_clip_button.setEnabled(has_selection)
+        self._remove_item_button.setEnabled(has_selection)
         self._preview_button.setEnabled(has_selection)
         self._move_up_button.setEnabled(has_selection and index > 0)
-        self._move_down_button.setEnabled(has_selection and index < len(self._clips) - 1)
+        self._move_down_button.setEnabled(has_selection and index < len(self._items) - 1)
 
-    def _update_clip_regions(self) -> None:
-        self._waveform.set_clip_regions(self._clips.regions())
+    def _update_item_regions(self) -> None:
+        self._waveform.set_clip_regions(self._items.regions())

@@ -5,7 +5,7 @@ manual workflow first (no ML, works on either machine), ML features
 (VAD, forced alignment) layered on afterward since they need the GPU
 machine. Each phase is independently verifiable before moving to the next.
 
-Status: **Phase 2 done.** Next up: **Phase 3**.
+Status: **Phase 3 done.** Next up: **Phase 4**.
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
@@ -29,7 +29,7 @@ PySide6 app skeleton, `MainWindow` renders. Done.
 - **Verify:** manually carve a long recording into several clips and
   play each one back in isolation.
 
-## Phase 3 — Item model: clip + text (pure manual flow)
+## Phase 3 — Item model: clip + text (pure manual flow) ✅
 - Each clip gets a free-typed text field → forms an "item"
   (`audio_span + text`).
 - Curation: delete any item regardless of how it was created.

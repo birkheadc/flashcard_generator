@@ -99,7 +99,7 @@ def test_import_long_audio_proceeds_if_confirmed(qtbot, wav_file, monkeypatch):
     assert window._duration_ms == pytest.approx(31 * 60 * 1000, abs=100)
 
 
-def test_selection_enables_add_clip_button(qtbot, wav_file):
+def test_selection_enables_add_item_button(qtbot, wav_file):
     path = wav_file(duration_seconds=10.0)
 
     window = MainWindow()
@@ -107,16 +107,16 @@ def test_selection_enables_add_clip_button(qtbot, wav_file):
     window._load_audio_file(path)
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
-    assert not window._add_clip_button.isEnabled()
+    assert not window._add_item_button.isEnabled()
 
     window._waveform._waveform.set_selection(1.0, 3.0)
-    assert window._add_clip_button.isEnabled()
+    assert window._add_item_button.isEnabled()
 
     window._waveform.clear_selection()
-    assert not window._add_clip_button.isEnabled()
+    assert not window._add_item_button.isEnabled()
 
 
-def test_add_clip_appends_to_list_and_clears_selection(qtbot, wav_file):
+def test_add_item_appends_to_list_and_clears_selection(qtbot, wav_file):
     path = wav_file(duration_seconds=10.0)
 
     window = MainWindow()
@@ -125,17 +125,18 @@ def test_add_clip_appends_to_list_and_clears_selection(qtbot, wav_file):
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
     window._waveform._waveform.set_selection(1.0, 3.0)
-    window._on_add_clip_clicked()
+    window._on_add_item_clicked()
 
-    assert len(window._clips) == 1
-    assert window._clips[0].start_seconds == pytest.approx(1.0)
-    assert window._clips[0].end_seconds == pytest.approx(3.0)
-    assert window._clip_list_widget.count() == 1
+    assert len(window._items) == 1
+    assert window._items[0].clip.start_seconds == pytest.approx(1.0)
+    assert window._items[0].clip.end_seconds == pytest.approx(3.0)
+    assert window._items[0].text == ""
+    assert window._item_list_widget.count() == 1
     assert window._waveform.selection is None
-    assert not window._add_clip_button.isEnabled()
+    assert not window._add_item_button.isEnabled()
 
 
-def test_remove_clip_deletes_selected_row(qtbot, wav_file):
+def test_remove_item_deletes_selected_row(qtbot, wav_file):
     path = wav_file(duration_seconds=10.0)
 
     window = MainWindow()
@@ -144,18 +145,18 @@ def test_remove_clip_deletes_selected_row(qtbot, wav_file):
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
     window._waveform._waveform.set_selection(1.0, 3.0)
-    window._on_add_clip_clicked()
+    window._on_add_item_clicked()
     window._waveform._waveform.set_selection(4.0, 6.0)
-    window._on_add_clip_clicked()
+    window._on_add_item_clicked()
 
-    window._clip_list_widget.setCurrentRow(0)
-    window._on_remove_clip_clicked()
+    window._item_list_widget.setCurrentRow(0)
+    window._on_remove_item_clicked()
 
-    assert len(window._clips) == 1
-    assert window._clips[0].start_seconds == pytest.approx(4.0)
+    assert len(window._items) == 1
+    assert window._items[0].clip.start_seconds == pytest.approx(4.0)
 
 
-def test_move_clip_up_and_down_reorders(qtbot, wav_file):
+def test_move_item_up_and_down_reorders(qtbot, wav_file):
     path = wav_file(duration_seconds=10.0)
 
     window = MainWindow()
@@ -164,23 +165,23 @@ def test_move_clip_up_and_down_reorders(qtbot, wav_file):
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
     window._waveform._waveform.set_selection(1.0, 2.0)
-    window._on_add_clip_clicked()
+    window._on_add_item_clicked()
     window._waveform._waveform.set_selection(3.0, 4.0)
-    window._on_add_clip_clicked()
+    window._on_add_item_clicked()
 
-    window._clip_list_widget.setCurrentRow(1)
-    window._on_move_clip_up()
+    window._item_list_widget.setCurrentRow(1)
+    window._on_move_item_up()
 
-    assert [c.start_seconds for c in window._clips] == [3.0, 1.0]
-    assert window._clip_list_widget.currentRow() == 0
+    assert [i.clip.start_seconds for i in window._items] == [3.0, 1.0]
+    assert window._item_list_widget.currentRow() == 0
 
-    window._on_move_clip_down()
+    window._on_move_item_down()
 
-    assert [c.start_seconds for c in window._clips] == [1.0, 3.0]
-    assert window._clip_list_widget.currentRow() == 1
+    assert [i.clip.start_seconds for i in window._items] == [1.0, 3.0]
+    assert window._item_list_widget.currentRow() == 1
 
 
-def test_loop_preview_seeks_back_to_clip_start_past_end(qtbot, wav_file):
+def test_loop_preview_seeks_back_to_item_start_past_end(qtbot, wav_file):
     path = wav_file(duration_seconds=10.0)
 
     window = MainWindow()
@@ -189,14 +190,14 @@ def test_loop_preview_seeks_back_to_clip_start_past_end(qtbot, wav_file):
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
     window._waveform._waveform.set_selection(1.0, 2.0)
-    window._on_add_clip_clicked()
-    window._clip_list_widget.setCurrentRow(0)
+    window._on_add_item_clicked()
+    window._item_list_widget.setCurrentRow(0)
 
     window._on_preview_clicked()
     assert window._preview_button.text() == "Stop Preview"
     qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
 
-    window._on_position_changed(2500)  # past the clip's 2.0s end
+    window._on_position_changed(2500)  # past the item's 2.0s end
 
     assert window._player.position() == pytest.approx(1000, abs=50)
 
@@ -269,7 +270,7 @@ def test_manual_seek_stops_active_loop(qtbot, wav_file):
     assert window._play_selection_button.text() == "Play Selection (Loop)"
 
 
-def test_dragging_clip_edge_on_waveform_updates_the_clip(qtbot, wav_file):
+def test_dragging_item_edge_on_waveform_updates_the_item(qtbot, wav_file):
     path = wav_file(duration_seconds=10.0)
 
     window = MainWindow()
@@ -278,16 +279,34 @@ def test_dragging_clip_edge_on_waveform_updates_the_clip(qtbot, wav_file):
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
     window._waveform._waveform.set_selection(1.0, 3.0)
-    window._on_add_clip_clicked()
+    window._on_add_item_clicked()
 
-    window._on_clip_region_edited(0, 1.0, 5.0)
+    window._on_item_region_edited(0, 1.0, 5.0)
 
-    assert window._clips[0].start_seconds == pytest.approx(1.0)
-    assert window._clips[0].end_seconds == pytest.approx(5.0)
-    assert window._clip_list_widget.item(0).text().startswith("1. 0:01–0:05")
+    assert window._items[0].clip.start_seconds == pytest.approx(1.0)
+    assert window._items[0].clip.end_seconds == pytest.approx(5.0)
+    assert window._item_list_widget.item(0).text().startswith("1. 0:01–0:05")
 
 
-def test_loading_new_file_clears_clips_if_confirmed(qtbot, wav_file, monkeypatch):
+def test_editing_item_region_preserves_its_text(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 3.0)
+    window._on_add_item_clicked()
+    window._item_list_widget.setCurrentRow(0)
+    window._item_text_edit.setPlainText("hello world")
+
+    window._on_item_region_edited(0, 1.0, 5.0)
+
+    assert window._items[0].text == "hello world"
+
+
+def test_loading_new_file_clears_items_if_confirmed(qtbot, wav_file, monkeypatch):
     monkeypatch.setattr(
         QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes
     )
@@ -299,17 +318,17 @@ def test_loading_new_file_clears_clips_if_confirmed(qtbot, wav_file, monkeypatch
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
     window._waveform._waveform.set_selection(1.0, 2.0)
-    window._on_add_clip_clicked()
-    assert len(window._clips) == 1
+    window._on_add_item_clicked()
+    assert len(window._items) == 1
 
     second_path = wav_file(duration_seconds=5.0)
     window._load_audio_file(second_path)
 
-    assert len(window._clips) == 0
-    assert window._clip_list_widget.count() == 0
+    assert len(window._items) == 0
+    assert window._item_list_widget.count() == 0
 
 
-def test_loading_new_file_with_clips_warns_and_aborts_if_declined(qtbot, wav_file, monkeypatch):
+def test_loading_new_file_with_items_warns_and_aborts_if_declined(qtbot, wav_file, monkeypatch):
     warnings = []
     monkeypatch.setattr(
         QMessageBox,
@@ -324,7 +343,7 @@ def test_loading_new_file_with_clips_warns_and_aborts_if_declined(qtbot, wav_fil
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
     window._waveform._waveform.set_selection(1.0, 2.0)
-    window._on_add_clip_clicked()
+    window._on_add_item_clicked()
     original_title = window.windowTitle()
 
     second_path = wav_file(duration_seconds=5.0)
@@ -332,11 +351,11 @@ def test_loading_new_file_with_clips_warns_and_aborts_if_declined(qtbot, wav_fil
 
     assert len(warnings) == 1
     assert "discard" in warnings[0][1].lower()
-    assert len(window._clips) == 1
+    assert len(window._items) == 1
     assert window.windowTitle() == original_title
 
 
-def test_loading_new_file_without_clips_does_not_warn(qtbot, wav_file, monkeypatch):
+def test_loading_new_file_without_items_does_not_warn(qtbot, wav_file, monkeypatch):
     warnings = []
     monkeypatch.setattr(
         QMessageBox, "warning", lambda *args, **kwargs: warnings.append(args)
@@ -374,3 +393,91 @@ def test_failed_import_shows_supported_formats_and_keeps_playback_disabled(
     assert len(shown_messages) == 1
     message_text = shown_messages[0][2]
     assert "Supported file types" in message_text
+
+
+# -- item text field (Phase 3) -------------------------------------------
+
+
+def test_text_edit_disabled_until_an_item_is_selected(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    assert not window._item_text_edit.isEnabled()
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+
+    assert window._item_text_edit.isEnabled()
+    assert window._item_text_edit.toPlainText() == ""
+
+
+def test_typing_in_text_edit_saves_to_the_selected_item(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+
+    window._item_text_edit.setPlainText("こんにちは")
+
+    assert window._items[0].text == "こんにちは"
+    assert "こんにちは" in window._item_list_widget.item(0).text()
+
+
+def test_selecting_a_different_item_loads_its_own_text(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._item_text_edit.setPlainText("first item")
+
+    window._waveform._waveform.set_selection(3.0, 4.0)
+    window._on_add_item_clicked()
+    window._item_text_edit.setPlainText("second item")
+
+    window._item_list_widget.setCurrentRow(0)
+    assert window._item_text_edit.toPlainText() == "first item"
+
+    window._item_list_widget.setCurrentRow(1)
+    assert window._item_text_edit.toPlainText() == "second item"
+
+    assert window._items[0].text == "first item"
+    assert window._items[1].text == "second item"
+
+
+def test_removing_item_deletes_it_regardless_of_text(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._item_text_edit.setPlainText("has text")
+
+    window._waveform._waveform.set_selection(3.0, 4.0)
+    window._on_add_item_clicked()  # no text typed for this one
+
+    assert len(window._items) == 2
+
+    window._item_list_widget.setCurrentRow(0)
+    window._on_remove_item_clicked()
+    window._item_list_widget.setCurrentRow(0)
+    window._on_remove_item_clicked()
+
+    assert len(window._items) == 0
