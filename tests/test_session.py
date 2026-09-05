@@ -64,6 +64,25 @@ def test_load_returns_none_for_invalid_clip_span(tmp_path):
     assert load_session(session_path) is None
 
 
+def test_save_then_load_round_trips_transcript_text(tmp_path):
+    session_path = tmp_path / "session.json"
+    transcript_text = "First section.\n\nSecond section."
+
+    save_session(session_path, "/audio.wav", ItemList(), transcript_text)
+    data = load_session(session_path)
+
+    assert data.transcript_text == transcript_text
+
+
+def test_save_without_transcript_text_round_trips_empty_string(tmp_path):
+    session_path = tmp_path / "session.json"
+
+    save_session(session_path, "/audio.wav", ItemList())
+    data = load_session(session_path)
+
+    assert data.transcript_text == ""
+
+
 def test_save_overwrites_previous_contents(tmp_path):
     session_path = tmp_path / "session.json"
     items = ItemList()

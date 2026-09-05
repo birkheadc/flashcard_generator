@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtGui import QAction, QInputMethodEvent
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtGui import QAction, QInputMethodEvent, QTextCursor
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from flashcard_generator.clips import Clip
 from flashcard_generator.items import Item, ItemList
 from flashcard_generator.session import load_session, save_session
 from flashcard_generator.ui.main_window import RANGE_COLUMN, TEXT_COLUMN, ItemTextEdit, MainWindow
+
+
+def _select_substring(text_edit, substring: str) -> None:
+    """Test helper: select the given substring within a QPlainTextEdit,
+    mimicking a user highlighting a span of the transcript by hand."""
+    text = text_edit.toPlainText()
+    start = text.index(substring)
+    cursor = text_edit.textCursor()
+    cursor.setPosition(start)
+    cursor.setPosition(start + len(substring), QTextCursor.MoveMode.KeepAnchor)
+    text_edit.setTextCursor(cursor)
 
 
 def test_import_loads_audio_and_enables_playback(qtbot, wav_file):
@@ -606,3 +617,111 @@ def test_restoring_session_with_corrupted_file_starts_empty(qtbot, session_path)
 
     assert len(window._items) == 0
     assert window._audio_path is None
+
+
+# -- transcript import & matching (Phase 4) --------------------------------
+
+
+def test_import_transcript_disabled_until_audio_is_loaded(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert not window._import_transcript_action.isEnabled()
+
+
+def test_loading_audio_enables_import_transcript(qtbot, wav_file):
+    path = wav_file(duration_seconds=5.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+
+    assert window._import_transcript_action.isEnabled()
+
+
+def test_import_transcript_populates_pane_and_reveals_it(qtbot, wav_file, tmp_path, monkeypatch):
+    path = wav_file(duration_seconds=5.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._load_audio_file(path)
+
+    assert not window._transcript_panel.isVisible()
+
+    transcript_path = tmp_path / "transcript.txt"
+    transcript_path.write_text("First section.\n\nSecond section.", encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(transcript_path), "")
+    )
+
+    window._import_transcript()
+
+    assert window._transcript_panel.isVisible()
+    # The raw transcript is shown as-is, not split into pre-cut sections —
+    # automatic splitting only makes sense once forced alignment (Phase 9)
+    # exists to do it against known audio timing.
+    assert window._transcript_text_edit.toPlainText() == "First section.\n\nSecond section."
+    assert window._transcript_text == "First section.\n\nSecond section."
+
+
+def test_using_a_transcript_selection_sets_the_selected_items_text(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+
+    window._set_transcript_text("First section.\n\nSecond section.")
+
+    window._item_list_widget.setCurrentRow(0)
+    _select_substring(window._transcript_text_edit, "Second section.")
+    assert window._match_transcript_button.isEnabled()
+
+    window._on_use_transcript_selection_clicked()
+
+    assert window._items[0].text == "Second section."
+    assert window._item_text_edit.toPlainText() == "Second section."
+
+
+def test_use_selection_button_disabled_without_item_or_text_selection(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._set_transcript_text("First section.\n\nSecond section.")
+
+    assert not window._match_transcript_button.isEnabled()
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._item_list_widget.setCurrentRow(0)
+
+    assert not window._match_transcript_button.isEnabled()
+
+    _select_substring(window._transcript_text_edit, "First section.")
+    assert window._match_transcript_button.isEnabled()
+
+
+def test_transcript_text_survives_session_restore(qtbot, wav_file, session_path):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._set_transcript_text("Only section.")
+    window._save_session()
+
+    restored = MainWindow()
+    qtbot.addWidget(restored)
+    restored.show()
+    qtbot.waitUntil(lambda: restored._duration_ms > 0, timeout=3000)
+
+    assert restored._transcript_text == "Only section."
+    assert restored._transcript_text_edit.toPlainText() == "Only section."
+    assert restored._transcript_panel.isVisible()

@@ -5,8 +5,18 @@ manual workflow first (no ML, works on either machine), ML features
 (VAD, forced alignment) layered on afterward since they need the GPU
 machine. Each phase is independently verifiable before moving to the next.
 
+> **Note:** Development paused after Phase 3 for an overall redesign of the
+> UI (see [DESIGN.md](DESIGN.md)), rebuilding the app on a properly designed
+> layout rather than the ad-hoc widget arrangement each earlier phase had
+> bolted onto. That pass included disabled/stubbed entry points for several
+> not-yet-built later-phase features (Import Transcript, Suggest Clips,
+> Align Transcript, Note Template, Export), sized and positioned where
+> they'll live once real, per DESIGN.md §3 — the same treatment already
+> given the Phase 11 "Record in-app" stub. Each is wired up for real as its
+> own phase lands; Phase 4 below is the first of those.
+
 Status: **Phase 3 done.** **Phase 7 pulled forward and done early** (see
-note below). Next up: **Phase 4**.
+note below). **Phase 4 done.** Next up: **Phase 5**.
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
@@ -43,12 +53,38 @@ PySide6 app skeleton, `MainWindow` renders. Done.
 > implemented right after this phase, out of build order — see Phase 7
 > below for why and what's scoped down as a result.
 
-## Phase 4 — Transcript import & manual matching
-- Load a plain-text transcript, split into sections (e.g. lines/paragraphs).
-- UI to associate a transcript section with a clip (manual pairing) as an
-  alternative to free-typing.
+## Phase 4 — Transcript import & manual matching ✅
+- Load a plain-text transcript.
+- UI to associate a span of the transcript with a clip (manual pairing) as
+  an alternative to free-typing.
 - **Verify:** import a transcript alongside an audio file and manually
-  match several sections to clips.
+  match several spans to clips.
+
+> **Design correction (made during implementation):** the original plan
+> above (and DESIGN.md §5) called for auto-splitting the transcript into
+> discrete sections on import, matched to clips one section at a time.
+> That only makes sense once forced alignment (Phase 9) exists to cut
+> sections against known audio timing — for *manual* matching there's no
+> reliable way to guess where one section ends and the next begins, so
+> auto-splitting would just produce arbitrary, likely-wrong boundaries.
+> Dropped in favor of showing the raw transcript untouched and letting the
+> user highlight whatever span they want, same as free-text selection in
+> any editor. DESIGN.md §5 is stale on this point; this note is the
+> current source of truth until it's updated.
+
+- **Implemented:** "Import Transcript" (toolbar) reads a plain-text file
+  (`flashcard_generator/transcript.py`) and shows it as-is — no splitting —
+  in a read-only, text-selectable pane to the right of the waveform (hidden
+  until a transcript is loaded). Pairing: select an item in the clip deck,
+  highlight any span of the transcript by hand, "Use Selection as Text"
+  copies that span onto the item's text field (equivalent to typing it —
+  no persistent link back to a "section," since none exists). The
+  transcript text persists across autosave/restore alongside the items
+  (`session.py`), following Phase 7's note that this would be a small,
+  additive schema change. Forced alignment (Phase 9), when it lands, will
+  use the full transcript text plus VAD-suggested clip boundaries to
+  generate matched items directly — it won't leave behind reusable
+  "sections" either.
 
 ## Phase 5 — Cloze selection & card template
 - Manual text-selection UI (highlight-to-select, like a text editor) to

@@ -17,9 +17,15 @@ def default_session_path() -> Path:
 class SessionData:
     audio_path: str
     items: list[Item]
+    transcript_text: str
 
 
-def save_session(path: Path, audio_path: str, items: ItemList) -> None:
+def save_session(
+    path: Path,
+    audio_path: str,
+    items: ItemList,
+    transcript_text: str = "",
+) -> None:
     """Best-effort autosave: failures are swallowed rather than surfaced,
     since this runs after nearly every edit and shouldn't interrupt work.
     """
@@ -33,6 +39,7 @@ def save_session(path: Path, audio_path: str, items: ItemList) -> None:
             }
             for item in items
         ],
+        "transcript_text": transcript_text,
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +64,10 @@ def load_session(path: Path) -> SessionData | None:
             )
             for entry in raw["items"]
         ]
-        return SessionData(audio_path=raw["audio_path"], items=items)
+        return SessionData(
+            audio_path=raw["audio_path"],
+            items=items,
+            transcript_text=raw.get("transcript_text", ""),
+        )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None

@@ -123,6 +123,21 @@ window height available to it (modulo the transcript pane's width).
 
 ## 5. Transcript pane
 
+> **Superseded (Phase 4 implementation):** the "list of pre-cut sections"
+> design below was dropped — see ROADMAP.md Phase 4's design-correction
+> note. Auto-splitting a transcript into sections only makes sense once
+> forced alignment (Phase 9) can cut them against known audio timing;
+> for manual matching there's no reliable place to draw those boundaries
+> automatically. What's actually built: the raw transcript shown untouched
+> in a read-only, text-selectable field, CJK-safe font/line-height (§10)
+> as below. The user highlights any span by hand (ordinary text-editor
+> selection, not a fixed list) and a "Use Selection as Text" button copies
+> it onto the currently selected item — a plain text-field write, not a
+> tracked "match" with its own visual state. No drag-and-drop, no
+> matched/unmatched indicator, since there's no discrete section to carry
+> that state. The rest of this section (now historical) described the
+> original per-section design:
+
 A simple vertical list of transcript sections (paragraph/line-split on
 import). Each section:
 
@@ -143,7 +158,8 @@ import). Each section:
 
 When no transcript is loaded, this pane collapses (§2) rather than showing
 an empty list — an empty list would imply the feature is broken, not
-optional.
+optional. (Still true: the pane collapses when there's no transcript,
+whether or not it holds pre-cut sections.)
 
 ## 6. Item deck
 

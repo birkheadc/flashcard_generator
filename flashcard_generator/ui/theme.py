@@ -216,7 +216,7 @@ QFrame#panelFooter {{
     border-top: {BORDER_WIDTH}px solid {BORDER_HAIRLINE};
 }}
 
-QWidget#waveformPanel, QWidget#itemsPanel, QWidget#editorPanel {{
+QWidget#waveformPanel, QWidget#transcriptPanel, QWidget#itemsPanel, QWidget#editorPanel {{
     background: {PAPER_0};
     border: {BORDER_WIDTH}px solid {BORDER_HAIRLINE};
 }}

@@ -31,6 +31,7 @@ from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
 from ..items import Item, ItemList
 from ..session import default_session_path, load_session, save_session
+from ..transcript import normalize_transcript
 from . import theme
 from .format_time import format_time, format_time_ago
 from .icons import icon
@@ -166,6 +167,7 @@ class MainWindow(QMainWindow):
 
         self._duration_ms = 0
         self._items = ItemList()
+        self._transcript_text = ""
         self._audio_path: str | None = None
         self._session_path = session_path if session_path is not None else default_session_path()
         self._pending_selection: tuple[float, float] | None = None
@@ -203,7 +205,14 @@ class MainWindow(QMainWindow):
 
         main_splitter = QSplitter(Qt.Orientation.Vertical, central)
         main_splitter.setHandleWidth(10)
-        main_splitter.addWidget(self._build_waveform_panel())
+
+        top_splitter = QSplitter(Qt.Orientation.Horizontal, main_splitter)
+        top_splitter.setHandleWidth(10)
+        top_splitter.addWidget(self._build_waveform_panel())
+        top_splitter.addWidget(self._build_transcript_panel())
+        top_splitter.setStretchFactor(0, 3)
+        top_splitter.setStretchFactor(1, 1)
+        main_splitter.addWidget(top_splitter)
 
         deck_splitter = QSplitter(Qt.Orientation.Horizontal, main_splitter)
         deck_splitter.setHandleWidth(10)
@@ -291,6 +300,51 @@ class MainWindow(QMainWindow):
         transport_layout.addWidget(self._waveform.zoom_bar)
         layout.addWidget(transport)
 
+        return panel
+
+    def _build_transcript_panel(self) -> QWidget:
+        # Hidden until a transcript is imported (§5 of DESIGN.md: an empty
+        # pane would read as broken rather than optional), so the no-
+        # transcript flow from earlier phases keeps its full waveform width.
+        panel = QWidget(self)
+        panel.setObjectName("transcriptPanel")
+        panel.setVisible(False)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame(panel)
+        header.setObjectName("panelHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 4, 12, 4)
+        header_layout.addWidget(self._section_label("Transcript"))
+        header_layout.addStretch()
+        layout.addWidget(header)
+
+        # Read-only, but text-selectable: the raw transcript is shown as-is
+        # (no automatic splitting — that only makes sense once forced
+        # alignment (Phase 9) exists to do it against known audio timing).
+        # The user highlights whatever span they want, like in any text
+        # editor, and "Use Selection as Text" below copies it onto the
+        # currently selected item.
+        self._transcript_text_edit = QPlainTextEdit(panel)
+        self._transcript_text_edit.setReadOnly(True)
+        self._transcript_text_edit.selectionChanged.connect(self._update_match_button_enabled)
+        layout.addWidget(self._transcript_text_edit, 1)
+
+        footer = QFrame(panel)
+        footer.setObjectName("panelFooter")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(10, 6, 10, 6)
+        self._match_transcript_button = QPushButton("Use Selection as Text")
+        self._match_transcript_button.setIcon(icon("mdi6.link-variant"))
+        self._match_transcript_button.setEnabled(False)
+        self._match_transcript_button.clicked.connect(self._on_use_transcript_selection_clicked)
+        footer_layout.addWidget(self._match_transcript_button)
+        footer_layout.addStretch()
+        layout.addWidget(footer)
+
+        self._transcript_panel = panel
         return panel
 
     def _build_items_panel(self) -> QWidget:
@@ -438,8 +492,15 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        self._import_transcript_action = QAction(
+            icon("mdi6.file-document-outline"), "Import Transcript", self
+        )
+        self._import_transcript_action.setEnabled(False)
+        self._import_transcript_action.setToolTip("Import an audio file first")
+        self._import_transcript_action.triggered.connect(self._import_transcript)
+        toolbar.addAction(self._import_transcript_action)
+
         for text, icon_name in (
-            ("Import Transcript", "mdi6.file-document-outline"),
             ("Suggest Clips", "mdi6.auto-fix"),
             ("Align Transcript", "mdi6.sync"),
         ):
@@ -474,7 +535,12 @@ class MainWindow(QMainWindow):
             return
         self._load_audio_file(path)
 
-    def _load_audio_file(self, path: str, initial_items: list[Item] | None = None) -> None:
+    def _load_audio_file(
+        self,
+        path: str,
+        initial_items: list[Item] | None = None,
+        initial_transcript_text: str = "",
+    ) -> None:
         if len(self._items) > 0 and not self._confirm_discard_items():
             return
 
@@ -498,10 +564,13 @@ class MainWindow(QMainWindow):
         for item in initial_items or []:
             self._items.add(item)
         self._refresh_item_list_widget()
+        self._set_transcript_text(initial_transcript_text)
         self._waveform.set_waveform(waveform_data)
         self._update_item_regions()
         self._player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
         self._play_button.setEnabled(True)
+        self._import_transcript_action.setEnabled(True)
+        self._import_transcript_action.setToolTip("")
         self.setWindowTitle(f"Flashcard Generator — {Path(path).name}")
 
         self._audio_path = str(Path(path).resolve())
@@ -511,14 +580,35 @@ class MainWindow(QMainWindow):
         data = load_session(self._session_path)
         if data is None:
             return
-        self._load_audio_file(data.audio_path, initial_items=data.items)
+        self._load_audio_file(
+            data.audio_path, initial_items=data.items, initial_transcript_text=data.transcript_text
+        )
 
     def _save_session(self) -> None:
         if self._audio_path is None:
             return
-        save_session(self._session_path, self._audio_path, self._items)
+        save_session(self._session_path, self._audio_path, self._items, self._transcript_text)
         self._last_autosave_time = datetime.now()
         self._update_autosave_label()
+
+    def _import_transcript(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import transcript", "", "Text files (*.txt);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            raw_text = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, "Failed to load transcript", str(exc))
+            return
+        self._set_transcript_text(normalize_transcript(raw_text))
+        self._save_session()
+
+    def _set_transcript_text(self, text: str) -> None:
+        self._transcript_text = text
+        self._transcript_text_edit.setPlainText(text)
+        self._transcript_panel.setVisible(bool(text))
 
     def _update_autosave_label(self) -> None:
         if self._last_autosave_time is None:
@@ -666,6 +756,7 @@ class MainWindow(QMainWindow):
 
     def _on_current_item_changed(self, index: int) -> None:
         self._update_item_buttons_enabled()
+        self._update_match_button_enabled()
         self._loading_item_text = True
         try:
             self._item_text_edit.setPlainText(self._items[index].text if index >= 0 else "")
@@ -687,7 +778,9 @@ class MainWindow(QMainWindow):
         if index < 0:
             return
         old = self._items[index]
-        self._items.replace(index, Item(clip=old.clip, text=self._item_text_edit.toPlainText()))
+        self._items.replace(
+            index, Item(clip=old.clip, text=self._item_text_edit.toPlainText())
+        )
         # Refresh just this row in place, rather than a full table rebuild,
         # so the text edit's cursor position isn't disturbed mid-keystroke.
         self._populate_row(index, self._items[index])
@@ -843,3 +936,30 @@ class MainWindow(QMainWindow):
 
     def _update_item_regions(self) -> None:
         self._waveform.set_clip_regions(self._items.regions())
+
+    # -- transcript (Phase 4) -----------------------------------------------
+
+    def _update_match_button_enabled(self) -> None:
+        has_item = self._item_list_widget.currentRow() >= 0
+        has_selection = self._transcript_text_edit.textCursor().hasSelection()
+        self._match_transcript_button.setEnabled(has_item and has_selection)
+
+    def _on_use_transcript_selection_clicked(self) -> None:
+        item_index = self._item_list_widget.currentRow()
+        cursor = self._transcript_text_edit.textCursor()
+        if item_index < 0 or not cursor.hasSelection():
+            return
+        # A selection spanning multiple paragraphs comes back with U+2029
+        # paragraph separators rather than '\n'.
+        selected_text = cursor.selectedText().replace(" ", "\n")
+        old = self._items[item_index]
+        self._items.replace(item_index, Item(clip=old.clip, text=selected_text))
+        self._populate_row(item_index, self._items[item_index])
+        self._update_items_meta()
+        if self._item_list_widget.currentRow() == item_index:
+            self._loading_item_text = True
+            try:
+                self._item_text_edit.setPlainText(self._items[item_index].text)
+            finally:
+                self._loading_item_text = False
+        self._save_session()
