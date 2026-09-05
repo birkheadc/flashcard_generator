@@ -24,6 +24,23 @@ def _isolate_default_session_path(session_path, monkeypatch):
 
 
 @pytest.fixture
+def template_library_path(tmp_path):
+    """Where a test's saved-template library goes, isolated from the real
+    one (ROADMAP.md Phase 5.5)."""
+    return tmp_path / "templates.json"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_template_library_path(template_library_path, monkeypatch):
+    """Point MainWindow()'s default template library path at a per-test
+    tmp file — same reasoning as `_isolate_default_session_path` above."""
+    monkeypatch.setattr(
+        "flashcard_generator.ui.main_window.default_template_library_path",
+        lambda: template_library_path,
+    )
+
+
+@pytest.fixture
 def wav_file(tmp_path):
     """Writes a synthetic sine-wave WAV file and returns its path."""
 

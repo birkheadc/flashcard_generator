@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtGui import QAction, QColor, QTextCharFormat, QTextCursor
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -17,11 +17,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -29,12 +31,15 @@ from PySide6.QtWidgets import (
 
 from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
-from ..items import Item, ItemList
+from ..items import ClozeSpan, Item, ItemList
 from ..session import default_session_path, load_session, save_session
+from ..template import NoteTemplate, cloze_index_count, cloze_wrapped_text, render_card
+from ..template_library import default_template_library_path
 from ..transcript import normalize_transcript
 from . import theme
 from .format_time import format_time, format_time_ago
 from .icons import icon
+from .template_dialog import NoteTemplateDialog
 from .waveform_view import WaveformView
 
 SUPPORTED_EXTENSIONS = ["wav", "flac", "ogg", "mp3", "aiff"]
@@ -95,6 +100,29 @@ class ItemTextEdit(QPlainTextEdit):
     def inputMethodEvent(self, event) -> None:  # noqa: ANN001 - Qt override signature
         super().inputMethodEvent(event)
         self.setPlaceholderText("" if event.preeditString() else self._placeholder)
+
+    def set_cloze_highlights(self, spans: list[ClozeSpan]) -> None:
+        """Highlight the marked cloze spans (ROADMAP.md Phase 5, extended
+        to multiple spans in Phase 5.5), or clear all highlights if given
+        none. Purely a rendering overlay (QTextEdit.ExtraSelection) —
+        doesn't touch the actual edit cursor or selection, so it's safe to
+        call on every keystroke."""
+        if not spans:
+            self.setExtraSelections([])
+            return
+        text_length = len(self.toPlainText())
+        selections = []
+        for span in spans:
+            cursor = self.textCursor()
+            cursor.setPosition(min(span.start, text_length))
+            cursor.setPosition(min(span.end, text_length), QTextCursor.MoveMode.KeepAnchor)
+            char_format = QTextCharFormat()
+            char_format.setBackground(QColor(theme.CYPRUS_100))
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = cursor
+            selection.format = char_format
+            selections.append(selection)
+        self.setExtraSelections(selections)
 
 
 class ItemTableWidget(QTableWidget):
@@ -168,6 +196,8 @@ class MainWindow(QMainWindow):
         self._duration_ms = 0
         self._items = ItemList()
         self._transcript_text = ""
+        self._template = NoteTemplate()
+        self._template_library_path = default_template_library_path()
         self._audio_path: str | None = None
         self._session_path = session_path if session_path is not None else default_session_path()
         self._pending_selection: tuple[float, float] | None = None
@@ -175,6 +205,7 @@ class MainWindow(QMainWindow):
         self._loop_source: str | None = None  # "item" | "selection" | None
         self._loop_item_index: int | None = None
         self._loading_item_text = False
+        self._loading_extra_fields = False
         self._last_autosave_time: datetime | None = None
 
         self._build_ui()
@@ -216,10 +247,17 @@ class MainWindow(QMainWindow):
 
         deck_splitter = QSplitter(Qt.Orientation.Horizontal, main_splitter)
         deck_splitter.setHandleWidth(10)
+        # Built (not yet added — that happens in left-to-right order below)
+        # ahead of the editor panel: the editor panel's construction ends
+        # by refreshing the card preview, which needs the preview labels
+        # this panel owns to already exist.
+        preview_panel = self._build_preview_panel()
         deck_splitter.addWidget(self._build_items_panel())
         deck_splitter.addWidget(self._build_editor_panel())
+        deck_splitter.addWidget(preview_panel)
         deck_splitter.setStretchFactor(0, 2)
-        deck_splitter.setStretchFactor(1, 1)
+        deck_splitter.setStretchFactor(1, 2)
+        deck_splitter.setStretchFactor(2, 2)
         main_splitter.addWidget(deck_splitter)
 
         main_splitter.setStretchFactor(0, 3)
@@ -408,6 +446,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(header)
 
         body = QWidget(panel)
+        body.setObjectName("scrollBody")
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(14, 14, 14, 14)
         body_layout.setSpacing(10)
@@ -419,7 +458,53 @@ class MainWindow(QMainWindow):
         self._item_text_edit.setEnabled(False)
         self._item_text_edit.setFixedHeight(96)
         self._item_text_edit.textChanged.connect(self._on_item_text_changed)
+        self._item_text_edit.selectionChanged.connect(self._update_cloze_buttons_enabled)
         body_layout.addWidget(self._item_text_edit)
+
+        body_layout.addWidget(self._section_label("Cloze"))
+        cloze_row = QHBoxLayout()
+        self._mark_cloze_button = QPushButton("Mark as Cloze")
+        self._mark_cloze_button.setIcon(icon("mdi6.text-box-edit-outline"))
+        self._mark_cloze_button.setEnabled(False)
+        self._mark_cloze_button.setToolTip(
+            "Select a span of the text above first. A new span becomes the "
+            "next cloze (c1, c2, ...) — Anki turns each into its own card."
+        )
+        self._mark_cloze_button.clicked.connect(self._on_mark_cloze_clicked)
+        cloze_row.addWidget(self._mark_cloze_button)
+        cloze_row.addStretch()
+        body_layout.addLayout(cloze_row)
+        self._cloze_hint_label = QLabel("Select an item to mark a cloze.")
+        self._cloze_hint_label.setObjectName("hintLabel")
+        self._cloze_hint_label.setWordWrap(True)
+        body_layout.addWidget(self._cloze_hint_label)
+        # One row per marked span (c1, c2, ...), each with its own remove
+        # button — rebuilt by _refresh_cloze_ui whenever the item/spans
+        # change, same pattern as the deck row's Actions column.
+        self._cloze_list_container = QWidget(body)
+        self._cloze_list_layout = QVBoxLayout(self._cloze_list_container)
+        self._cloze_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._cloze_list_layout.setSpacing(2)
+        body_layout.addWidget(self._cloze_list_container)
+
+        # One editable box per note-type field beyond the cloze-text field
+        # and "Audio" (e.g. a "Definition" field added in the template
+        # editor) — hidden entirely when the current template has none.
+        # Rebuilt by _rebuild_extra_field_inputs whenever the item
+        # selection or the template's field list changes.
+        self._extra_fields_section = QWidget(body)
+        extra_fields_section_layout = QVBoxLayout(self._extra_fields_section)
+        extra_fields_section_layout.setContentsMargins(0, 0, 0, 0)
+        extra_fields_section_layout.setSpacing(10)
+        extra_fields_section_layout.addWidget(self._section_label("Additional Fields"))
+        self._extra_fields_container = QWidget(self._extra_fields_section)
+        self._extra_fields_layout = QVBoxLayout(self._extra_fields_container)
+        self._extra_fields_layout.setContentsMargins(0, 0, 0, 0)
+        self._extra_fields_layout.setSpacing(10)
+        extra_fields_section_layout.addWidget(self._extra_fields_container)
+        body_layout.addWidget(self._extra_fields_section)
+        self._extra_fields_section.setVisible(False)
+        self._extra_field_edits: dict[str, ItemTextEdit] = {}
 
         body_layout.addWidget(self._section_label("Audio"))
         audio_row = QHBoxLayout()
@@ -444,7 +529,21 @@ class MainWindow(QMainWindow):
         body_layout.addLayout(reorder_row)
 
         body_layout.addStretch(1)
-        layout.addWidget(body, 1)
+
+        # A plain QVBoxLayout has no way to shrink gracefully once its
+        # content outgrows the splitter panel's allocated height (the
+        # panel doesn't grow to fit; the layout instead starts squeezing
+        # children, up to and including clipping/overlapping ones with a
+        # hard fixed size) — and this section only grows as fields are
+        # added in the template editor, so a scroll area rather than a
+        # bare body widget keeps it usable regardless of window height.
+        scroll_area = QScrollArea(panel)
+        scroll_area.setWidget(body)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        layout.addWidget(scroll_area, 1)
 
         footer = QFrame(panel)
         footer.setObjectName("panelFooter")
@@ -459,6 +558,67 @@ class MainWindow(QMainWindow):
         layout.addWidget(footer)
 
         self._update_item_buttons_enabled()
+        self._refresh_cloze_ui(-1)
+        self._rebuild_extra_field_inputs()
+        return panel
+
+    def _build_preview_panel(self) -> QWidget:
+        # Split out from the item editor into its own panel, deliberately
+        # departing from DESIGN.md §7 (which has the preview live inside
+        # the editor drawer) — editing and reading-the-result-back read as
+        # distinct enough activities to earn separate screen space, rather
+        # than the preview competing for room with the edit controls above
+        # it and needing a scroll to reach.
+        panel = QWidget(self)
+        panel.setObjectName("previewPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame(panel)
+        header.setObjectName("panelHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 4, 12, 4)
+        header_layout.addWidget(self._section_label("Card Preview"))
+        header_layout.addStretch()
+        layout.addWidget(header)
+
+        body = QWidget(panel)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(14, 14, 14, 14)
+        body_layout.setSpacing(10)
+
+        # Anki generates one card per distinct cloze number, not one card
+        # with every blank filled in at once — shown only when an item
+        # actually has more than one, so it doesn't clutter the common
+        # single-cloze case.
+        self._multi_cloze_hint_label = QLabel("", body)
+        self._multi_cloze_hint_label.setObjectName("hintLabel")
+        self._multi_cloze_hint_label.setWordWrap(True)
+        self._multi_cloze_hint_label.setVisible(False)
+        body_layout.addWidget(self._multi_cloze_hint_label)
+
+        front_caption = QLabel("Front")
+        front_caption.setObjectName("hintLabel")
+        body_layout.addWidget(front_caption)
+        self._preview_front_label = QLabel("", body)
+        self._preview_front_label.setWordWrap(True)
+        self._preview_front_label.setTextFormat(Qt.TextFormat.RichText)
+        self._preview_front_label.setObjectName("cardPreviewFace")
+        body_layout.addWidget(self._preview_front_label)
+
+        back_caption = QLabel("Back")
+        back_caption.setObjectName("hintLabel")
+        body_layout.addWidget(back_caption)
+        self._preview_back_label = QLabel("", body)
+        self._preview_back_label.setWordWrap(True)
+        self._preview_back_label.setTextFormat(Qt.TextFormat.RichText)
+        self._preview_back_label.setObjectName("cardPreviewFace")
+        body_layout.addWidget(self._preview_back_label)
+
+        body_layout.addStretch(1)
+        layout.addWidget(body, 1)
+
         return panel
 
     def _build_status_bar(self) -> None:
@@ -513,14 +673,14 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        for text, icon_name in (
-            ("Note Template", "mdi6.card-text-outline"),
-            ("Export", "mdi6.export-variant"),
-        ):
-            stub_action = QAction(icon(icon_name), text, self)
-            stub_action.setEnabled(False)
-            stub_action.setToolTip(NOT_YET_IMPLEMENTED)
-            toolbar.addAction(stub_action)
+        self._template_action = QAction(icon("mdi6.card-text-outline"), "Note Template", self)
+        self._template_action.triggered.connect(self._open_template_dialog)
+        toolbar.addAction(self._template_action)
+
+        export_action = QAction(icon("mdi6.export-variant"), "Export", self)
+        export_action.setEnabled(False)
+        export_action.setToolTip(NOT_YET_IMPLEMENTED)
+        toolbar.addAction(export_action)
 
         toolbar.addSeparator()
 
@@ -580,6 +740,7 @@ class MainWindow(QMainWindow):
         data = load_session(self._session_path)
         if data is None:
             return
+        self._template = data.template
         self._load_audio_file(
             data.audio_path, initial_items=data.items, initial_transcript_text=data.transcript_text
         )
@@ -587,7 +748,13 @@ class MainWindow(QMainWindow):
     def _save_session(self) -> None:
         if self._audio_path is None:
             return
-        save_session(self._session_path, self._audio_path, self._items, self._transcript_text)
+        save_session(
+            self._session_path,
+            self._audio_path,
+            self._items,
+            self._transcript_text,
+            self._template,
+        )
         self._last_autosave_time = datetime.now()
         self._update_autosave_label()
 
@@ -747,11 +914,21 @@ class MainWindow(QMainWindow):
     def _on_item_region_edited(self, index: int, start: float, end: float) -> None:
         old = self._items[index]
         new_clip = Clip(start_seconds=start, end_seconds=end)
-        self._items.replace(index, Item(clip=new_clip, text=old.text))
+        self._items.replace(
+            index,
+            Item(
+                clip=new_clip,
+                text=old.text,
+                cloze_spans=old.cloze_spans,
+                extra_fields=old.extra_fields,
+            ),
+        )
         if self._loop_source == "item" and self._loop_item_index == index:
             self._loop_range = (start, end)
         self._refresh_item_list_widget()
         self._update_item_regions()
+        if self._item_list_widget.currentRow() == index:
+            self._update_card_preview()
         self._save_session()
 
     def _on_current_item_changed(self, index: int) -> None:
@@ -770,6 +947,8 @@ class MainWindow(QMainWindow):
             )
         else:
             self._selected_range_label.setText("")
+        self._refresh_cloze_ui(index)
+        self._rebuild_extra_field_inputs()
 
     def _on_item_text_changed(self) -> None:
         if self._loading_item_text:
@@ -778,13 +957,23 @@ class MainWindow(QMainWindow):
         if index < 0:
             return
         old = self._items[index]
+        # Any text edit invalidates offsets into the old text, so all cloze
+        # spans (if any) are dropped rather than left stale — Item(...)
+        # already defaults cloze_spans to empty. extra_fields is unrelated
+        # to the main text field, so it's carried over untouched.
         self._items.replace(
-            index, Item(clip=old.clip, text=self._item_text_edit.toPlainText())
+            index,
+            Item(
+                clip=old.clip,
+                text=self._item_text_edit.toPlainText(),
+                extra_fields=old.extra_fields,
+            ),
         )
         # Refresh just this row in place, rather than a full table rebuild,
         # so the text edit's cursor position isn't disturbed mid-keystroke.
         self._populate_row(index, self._items[index])
         self._update_items_meta()
+        self._refresh_cloze_ui(index)
         self._save_session()
 
     def _on_preview_clicked(self) -> None:
@@ -850,10 +1039,15 @@ class MainWindow(QMainWindow):
             f"{format_time(clip.start_seconds)}–{format_time(clip.end_seconds)} "
             f"({format_time(clip.duration_seconds)})"
         )
+        # The deck row shows the item's original text as typed/matched, not
+        # a cloze-blanked rendering — DESIGN.md §6 originally called for a
+        # blanked preview here, but the Cloze status badge already conveys
+        # cloze progress and blanking made it harder to spot-check what a
+        # clip's text actually says while scanning the deck.
         preview = item.text.strip().splitlines()[0] if item.text.strip() else "(no text)"
         if len(preview) > 60:
             preview = preview[:60] + "…"
-        ready = bool(item.text.strip())
+        status_text, tone = self._item_status(item)
 
         range_item = QTableWidgetItem(range_text)
         range_item.setFlags(range_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -861,18 +1055,39 @@ class MainWindow(QMainWindow):
 
         text_item = QTableWidgetItem(preview)
         text_item.setFlags(text_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        if not ready:
+        if status_text != "Ready":
             text_item.setForeground(QColor(theme.TEXT_DISABLED))
         self._item_list_widget.setItem(row, TEXT_COLUMN, text_item)
 
-        self._item_list_widget.setCellWidget(row, STATE_COLUMN, self._make_state_badge(ready))
+        self._set_cell_widget(row, STATE_COLUMN, self._make_state_badge(status_text, tone))
+        self._set_cell_widget(row, ACTIONS_COLUMN, self._make_row_actions(row))
 
-        self._item_list_widget.setCellWidget(row, ACTIONS_COLUMN, self._make_row_actions(row))
+    def _set_cell_widget(self, row: int, column: int, widget: QWidget) -> None:
+        """QTableWidget.setCellWidget doesn't delete or hide the widget it
+        replaces (a longstanding Qt gotcha), so a row that's repopulated
+        many times over a session — every keystroke in the item text, every
+        cloze mark/clear — would otherwise pile up stale, still-visible
+        badge/action widgets on top of each other. Explicitly retire the
+        old one before installing the new one."""
+        old_widget = self._item_list_widget.cellWidget(row, column)
+        self._item_list_widget.setCellWidget(row, column, widget)
+        if old_widget is not None and old_widget is not widget:
+            old_widget.hide()
+            old_widget.deleteLater()
 
-    def _make_state_badge(self, ready: bool) -> QWidget:
-        badge = QLabel("Drafted" if ready else "Not drafted")
+    def _item_status(self, item: Item) -> tuple[str, str]:
+        """Three-state readiness per DESIGN.md §6 ("no text yet"/"no cloze
+        yet"/"ready"), returned as (badge text, badge tone)."""
+        if not item.text.strip():
+            return "Not drafted", "hard"
+        if not item.has_cloze:
+            return "No cloze", "hard"
+        return "Ready", "good"
+
+    def _make_state_badge(self, status_text: str, tone: str) -> QWidget:
+        badge = QLabel(status_text)
         badge.setObjectName("stateBadge")
-        badge.setProperty("tone", "good" if ready else "hard")
+        badge.setProperty("tone", tone)
 
         container = QWidget()
         container_layout = QHBoxLayout(container)
@@ -925,17 +1140,272 @@ class MainWindow(QMainWindow):
 
     def _update_items_meta(self) -> None:
         count = len(self._items)
-        drafted = sum(1 for item in self._items if item.text.strip())
-        not_drafted = count - drafted
+        ready = sum(1 for item in self._items if item.text.strip() and item.has_cloze)
+        needs_cloze = sum(1 for item in self._items if item.text.strip() and not item.has_cloze)
+        needs_text = count - ready - needs_cloze
         label = "1 item" if count == 1 else f"{count} items"
         self._items_count_label.setText(label)
-        self._items_ready_label.setText(
-            f"{drafted} drafted · {not_drafted} not drafted" if count else ""
-        )
+        parts = []
+        if ready:
+            parts.append(f"{ready} ready")
+        if needs_cloze:
+            parts.append(f"{needs_cloze} need cloze")
+        if needs_text:
+            parts.append(f"{needs_text} need text")
+        self._items_ready_label.setText(" · ".join(parts))
         self._status_items_label.setText(label)
 
     def _update_item_regions(self) -> None:
         self._waveform.set_clip_regions(self._items.regions())
+
+    # -- cloze selection & card template (Phase 5, multi-cloze in 5.5) ------
+
+    def _update_cloze_buttons_enabled(self) -> None:
+        index = self._item_list_widget.currentRow()
+        cursor = self._item_text_edit.textCursor()
+        has_selection = cursor.hasSelection()
+        overlaps = (
+            index >= 0
+            and has_selection
+            and self._items[index].overlaps_existing_cloze(
+                cursor.selectionStart(), cursor.selectionEnd()
+            )
+        )
+        self._mark_cloze_button.setEnabled(index >= 0 and has_selection and not overlaps)
+
+    def _on_mark_cloze_clicked(self) -> None:
+        index = self._item_list_widget.currentRow()
+        cursor = self._item_text_edit.textCursor()
+        if index < 0 or not cursor.hasSelection():
+            return
+        old = self._items[index]
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        if old.overlaps_existing_cloze(start, end):
+            return
+        new_spans = [*old.cloze_spans, ClozeSpan(start=start, end=end)]
+        self._items.replace(
+            index,
+            Item(clip=old.clip, text=old.text, cloze_spans=new_spans, extra_fields=old.extra_fields),
+        )
+        self._populate_row(index, self._items[index])
+        self._update_items_meta()
+        self._refresh_cloze_ui(index)
+        self._save_session()
+
+    def _on_remove_cloze_span(self, index: int, span: ClozeSpan) -> None:
+        if index != self._item_list_widget.currentRow():
+            return
+        old = self._items[index]
+        remaining = [s for s in old.cloze_spans if s != span]
+        self._items.replace(
+            index,
+            Item(
+                clip=old.clip, text=old.text, cloze_spans=remaining, extra_fields=old.extra_fields
+            ),
+        )
+        self._populate_row(index, self._items[index])
+        self._update_items_meta()
+        self._refresh_cloze_ui(index)
+        self._save_session()
+
+    def _refresh_cloze_ui(self, index: int) -> None:
+        item = self._items[index] if index >= 0 else None
+        spans = item.valid_cloze_spans() if item is not None else []
+        self._item_text_edit.set_cloze_highlights(spans)
+        self._rebuild_cloze_span_list(index, item, spans)
+        self._update_cloze_buttons_enabled()
+        self._update_card_preview()
+
+    def _rebuild_cloze_span_list(
+        self, index: int, item: Item | None, spans: list[ClozeSpan]
+    ) -> None:
+        while self._cloze_list_layout.count():
+            child = self._cloze_list_layout.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+
+        if item is None:
+            self._cloze_hint_label.setText("Select an item to mark a cloze.")
+            self._cloze_hint_label.setVisible(True)
+            return
+        if not spans:
+            self._cloze_hint_label.setText("Select a span of the text above, then Mark as Cloze.")
+            self._cloze_hint_label.setVisible(True)
+            return
+        self._cloze_hint_label.setVisible(False)
+
+        for cloze_number, span in enumerate(spans, start=1):
+            row = QWidget(self._cloze_list_container)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(f'c{cloze_number}: “{item.text[span.start:span.end]}”', row)
+            row_layout.addWidget(label)
+            row_layout.addStretch()
+            remove_button = QPushButton(row)
+            remove_button.setIcon(icon("mdi6.close", color=theme.ACTION_DANGER))
+            remove_button.setObjectName("rowIconButton")
+            remove_button.setToolTip(f"Remove cloze c{cloze_number}")
+            remove_button.setFixedSize(ROW_ICON_BUTTON_SIZE, ROW_ICON_BUTTON_SIZE)
+            remove_button.clicked.connect(
+                lambda _checked=False, idx=index, s=span: self._on_remove_cloze_span(idx, s)
+            )
+            row_layout.addWidget(remove_button)
+            self._cloze_list_layout.addWidget(row)
+
+    def _extra_field_names(self) -> list[str]:
+        """Template fields with no automatically-derived value — everything
+        except the cloze-text field (always the first field, by
+        convention) and any field literally named "Audio". These are the
+        fields `extra_field_inputs` shows editable boxes for in the item
+        editor, and the only ones read from `item.extra_fields`."""
+        fields = self._template.fields
+        return [
+            name
+            for i, name in enumerate(fields)
+            if i != 0 and name.strip().lower() != "audio"
+        ]
+
+    def _rebuild_extra_field_inputs(self) -> None:
+        while self._extra_fields_layout.count():
+            child = self._extra_fields_layout.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+        self._extra_field_edits = {}
+
+        names = self._extra_field_names()
+        if not names:
+            self._extra_fields_section.setVisible(False)
+            return
+
+        index = self._item_list_widget.currentRow()
+        item = self._items[index] if index >= 0 else None
+
+        for name in names:
+            field_container = QWidget(self._extra_fields_container)
+            field_layout = QVBoxLayout(field_container)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(2)
+            field_layout.addWidget(self._section_label(name))
+            field_edit = ItemTextEdit(f"Type the {name.lower()} for this item…", field_container)
+            field_edit.setFixedHeight(56)
+            field_edit.setEnabled(item is not None)
+            field_edit.textChanged.connect(
+                lambda field_name=name: self._on_extra_field_text_changed(field_name)
+            )
+            field_layout.addWidget(field_edit)
+            self._extra_fields_layout.addWidget(field_container)
+            self._extra_field_edits[name] = field_edit
+
+        self._loading_extra_fields = True
+        try:
+            for name, field_edit in self._extra_field_edits.items():
+                field_edit.setPlainText(item.extra_fields.get(name, "") if item is not None else "")
+        finally:
+            self._loading_extra_fields = False
+
+        # Made visible only after every row above already exists — doing
+        # this before populating left the hidden->visible transition
+        # computed against an empty container, and later additions never
+        # fully recomputed the splitter panel's geometry (each row's own
+        # sizeHint() was correct in isolation; the layout just never
+        # re-queried it), showing up as the section's rows being clipped
+        # to a sliver.
+        self._extra_fields_section.setVisible(True)
+
+    def _on_extra_field_text_changed(self, field_name: str) -> None:
+        if self._loading_extra_fields:
+            return
+        index = self._item_list_widget.currentRow()
+        field_edit = self._extra_field_edits.get(field_name)
+        if index < 0 or field_edit is None:
+            return
+        old = self._items[index]
+        new_extra_fields = dict(old.extra_fields)
+        new_extra_fields[field_name] = field_edit.toPlainText()
+        self._items.replace(
+            index,
+            Item(
+                clip=old.clip,
+                text=old.text,
+                cloze_spans=old.cloze_spans,
+                extra_fields=new_extra_fields,
+            ),
+        )
+        self._update_card_preview()
+        self._save_session()
+
+    def _field_values_for_item(self, item: Item) -> dict[str, str]:
+        fields = self._template.fields
+        values: dict[str, str] = {}
+        for i, name in enumerate(fields):
+            if i == 0:
+                values[name] = cloze_wrapped_text(item.text, item.valid_cloze_spans())
+            elif name.strip().lower() == "audio":
+                values[name] = (
+                    f"🔊 {format_time(item.clip.start_seconds)}"
+                    f"–{format_time(item.clip.end_seconds)}"
+                )
+            else:
+                values[name] = item.extra_fields.get(name, "")
+        return values
+
+    def _sample_field_values(self) -> dict[str, str]:
+        """Placeholder field values for the template editor's preview when
+        no item is selected — bilingual per ROADMAP.md Phase 5's verify
+        step, so the template editor's own preview isn't blank by default."""
+        fields = self._template.fields or list(NoteTemplate().fields)
+        values = {name: "" for name in fields}
+        values[fields[0]] = "これは {{c1::サンプル}} な文です。"
+        for name in fields:
+            if name.strip().lower() == "audio":
+                values[name] = "🔊 0:00–0:02"
+        return values
+
+    def _update_card_preview(self) -> None:
+        index = self._item_list_widget.currentRow()
+        if index < 0:
+            self._preview_front_label.setText("")
+            self._preview_back_label.setText("")
+            self._multi_cloze_hint_label.setVisible(False)
+            return
+        values = self._field_values_for_item(self._items[index])
+
+        cloze_count = cloze_index_count(values)
+        if cloze_count > 1:
+            self._multi_cloze_hint_label.setText(
+                f"This will make {cloze_count} cards — showing card 1 only."
+            )
+        self._multi_cloze_hint_label.setVisible(cloze_count > 1)
+
+        self._preview_front_label.setText(
+            render_card(self._template.front_template, values, active_index=1, reveal=False)
+        )
+        self._preview_back_label.setText(
+            render_card(self._template.back_template, values, active_index=1, reveal=True)
+        )
+
+    def _open_template_dialog(self) -> None:
+        index = self._item_list_widget.currentRow()
+        preview_values = (
+            self._field_values_for_item(self._items[index])
+            if index >= 0
+            else self._sample_field_values()
+        )
+        dialog = NoteTemplateDialog(
+            self._template, preview_values, self._template_library_path, self
+        )
+        dialog.template_changed.connect(self._on_template_changed)
+        dialog.exec()
+
+    def _on_template_changed(self, template: NoteTemplate) -> None:
+        self._template = template
+        self._rebuild_extra_field_inputs()
+        self._update_card_preview()
+        self._save_session()
 
     # -- transcript (Phase 4) -----------------------------------------------
 
@@ -953,7 +1423,9 @@ class MainWindow(QMainWindow):
         # paragraph separators rather than '\n'.
         selected_text = cursor.selectedText().replace(" ", "\n")
         old = self._items[item_index]
-        self._items.replace(item_index, Item(clip=old.clip, text=selected_text))
+        self._items.replace(
+            item_index, Item(clip=old.clip, text=selected_text, extra_fields=old.extra_fields)
+        )
         self._populate_row(item_index, self._items[item_index])
         self._update_items_meta()
         if self._item_list_widget.currentRow() == item_index:
@@ -962,4 +1434,5 @@ class MainWindow(QMainWindow):
                 self._item_text_edit.setPlainText(self._items[item_index].text)
             finally:
                 self._loading_item_text = False
+        self._refresh_cloze_ui(item_index)
         self._save_session()

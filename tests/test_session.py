@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from flashcard_generator.clips import Clip
-from flashcard_generator.items import Item, ItemList
+from flashcard_generator.items import ClozeSpan, Item, ItemList
 from flashcard_generator.session import default_session_path, load_session, save_session
+from flashcard_generator.template import NoteTemplate
 
 
 def test_default_session_path_is_under_home():
@@ -81,6 +82,123 @@ def test_save_without_transcript_text_round_trips_empty_string(tmp_path):
     data = load_session(session_path)
 
     assert data.transcript_text == ""
+
+
+# -- cloze spans & note template (Phase 5, multi-cloze/library in 5.5) ------
+
+
+def test_save_then_load_round_trips_cloze_spans(tmp_path):
+    session_path = tmp_path / "session.json"
+    items = ItemList()
+    items.add(
+        Item(
+            clip=Clip(0.0, 1.0),
+            text="저는 학생 입니다",
+            cloze_spans=[ClozeSpan(0, 2), ClozeSpan(3, 5)],
+        )
+    )
+    items.add(Item(clip=Clip(1.0, 2.0), text="no cloze here"))
+
+    save_session(session_path, "/audio.wav", items)
+    data = load_session(session_path)
+
+    assert data.items[0].cloze_spans == [ClozeSpan(0, 2), ClozeSpan(3, 5)]
+    assert data.items[0].has_cloze
+    assert data.items[1].cloze_spans == []
+    assert not data.items[1].has_cloze
+
+
+def test_save_then_load_round_trips_extra_fields(tmp_path):
+    session_path = tmp_path / "session.json"
+    items = ItemList()
+    items.add(
+        Item(
+            clip=Clip(0.0, 1.0),
+            text="hello",
+            extra_fields={"Definition": "a formal way of saying hello"},
+        )
+    )
+    items.add(Item(clip=Clip(1.0, 2.0), text="no extra fields"))
+
+    save_session(session_path, "/audio.wav", items)
+    data = load_session(session_path)
+
+    assert data.items[0].extra_fields == {"Definition": "a formal way of saying hello"}
+    assert data.items[1].extra_fields == {}
+
+
+def test_load_defaults_to_no_extra_fields_for_older_session_files(tmp_path):
+    session_path = tmp_path / "session.json"
+    session_path.write_text(
+        '{"audio_path": "/a.wav", "items": '
+        '[{"start_seconds": 0.0, "end_seconds": 1.0, "text": "hi"}]}',
+        encoding="utf-8",
+    )
+
+    data = load_session(session_path)
+
+    assert data is not None
+    assert data.items[0].extra_fields == {}
+
+
+def test_load_defaults_to_no_cloze_for_older_session_files(tmp_path):
+    session_path = tmp_path / "session.json"
+    session_path.write_text(
+        '{"audio_path": "/a.wav", "items": '
+        '[{"start_seconds": 0.0, "end_seconds": 1.0, "text": "hi"}]}',
+        encoding="utf-8",
+    )
+
+    data = load_session(session_path)
+
+    assert data is not None
+    assert data.items[0].cloze_spans == []
+    assert not data.items[0].has_cloze
+
+
+def test_load_migrates_pre_5_5_single_span_format(tmp_path):
+    session_path = tmp_path / "session.json"
+    session_path.write_text(
+        '{"audio_path": "/a.wav", "items": '
+        '[{"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello world", '
+        '"cloze_start": 6, "cloze_end": 11}]}',
+        encoding="utf-8",
+    )
+
+    data = load_session(session_path)
+
+    assert data is not None
+    assert data.items[0].cloze_spans == [ClozeSpan(6, 11)]
+    assert data.items[0].has_cloze
+
+
+def test_save_then_load_round_trips_note_template(tmp_path):
+    session_path = tmp_path / "session.json"
+    template = NoteTemplate(
+        name="My Template",
+        fields=["Text", "Audio", "Notes"],
+        front_template="{{cloze:Text}}",
+        back_template="{{cloze:Text}}<br>{{Audio}}<br>{{Notes}}",
+    )
+
+    save_session(session_path, "/audio.wav", ItemList(), template=template)
+    data = load_session(session_path)
+
+    assert data.template.name == "My Template"
+    assert data.template.fields == ["Text", "Audio", "Notes"]
+    assert data.template.front_template == "{{cloze:Text}}"
+    assert data.template.back_template == "{{cloze:Text}}<br>{{Audio}}<br>{{Notes}}"
+
+
+def test_load_defaults_to_default_template_for_older_session_files(tmp_path):
+    session_path = tmp_path / "session.json"
+    session_path.write_text('{"audio_path": "/a.wav", "items": []}', encoding="utf-8")
+
+    data = load_session(session_path)
+
+    assert data.template.fields == NoteTemplate().fields
+    assert data.template.front_template == NoteTemplate().front_template
+    assert data.template.back_template == NoteTemplate().back_template
 
 
 def test_save_overwrites_previous_contents(tmp_path):

@@ -216,13 +216,17 @@ QFrame#panelFooter {{
     border-top: {BORDER_WIDTH}px solid {BORDER_HAIRLINE};
 }}
 
-QWidget#waveformPanel, QWidget#transcriptPanel, QWidget#itemsPanel, QWidget#editorPanel {{
+QWidget#waveformPanel, QWidget#transcriptPanel, QWidget#itemsPanel, QWidget#editorPanel, QWidget#previewPanel {{
     background: {PAPER_0};
     border: {BORDER_WIDTH}px solid {BORDER_HAIRLINE};
 }}
 
-QWidget#editorPanel {{
+QWidget#editorPanel, QWidget#previewPanel {{
     background: {PAPER_1};
+}}
+
+QWidget#scrollBody {{
+    background: transparent;
 }}
 
 QToolBar#mainToolbar {{
@@ -248,7 +252,7 @@ QToolBar#mainToolbar QToolButton:hover:!disabled {{
 
 QToolBar#mainToolbar QToolButton:disabled {{
     color: {TEXT_DISABLED};
-    background: {PAPER_1};
+    background: {PAPER_2};
     border-color: {BORDER_HAIRLINE};
 }}
 
@@ -284,7 +288,7 @@ QPushButton:pressed:!disabled {{
 
 QPushButton:disabled {{
     color: {TEXT_DISABLED};
-    background: {PAPER_1};
+    background: {PAPER_2};
 }}
 
 QPushButton#primaryButton {{
@@ -405,8 +409,17 @@ QPlainTextEdit:focus {{
 }}
 
 QPlainTextEdit:disabled {{
-    background: {PAPER_1};
+    background: {PAPER_2};
     color: {TEXT_DISABLED};
+}}
+
+QLabel#cardPreviewFace {{
+    background: {PAPER_0};
+    border: {BORDER_WIDTH}px solid {BORDER_HAIRLINE};
+    border-radius: {RADIUS_3}px;
+    padding: {SPACE_4}px {SPACE_5}px;
+    color: {TEXT_BODY};
+    font-family: {FONT_READ};
 }}
 
 QSplitter::handle {{

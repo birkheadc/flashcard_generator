@@ -188,6 +188,17 @@ tool exists to remove.
 
 ## 7. Item editor (drawer)
 
+> **Superseded (post-Phase-5.5 implementation):** the live card preview
+> described below no longer lives inside this drawer — see ROADMAP.md
+> Phase 5.5's design-deviation note. Additional Fields (also added after
+> this section was written) pushed the drawer's own content past a single
+> screen's height often enough to need a scroll area, and at that point
+> the preview read as one more thing to scroll past rather than the
+> always-visible check-your-work panel it's meant to be. It's now a
+> separate panel to this drawer's right (still part of the same deck row,
+> still appears/updates for whichever item is selected here) — everything
+> else in this section is unchanged.
+
 Opens for one selected item at a time; everything about that item lives
 here so the deck row can stay a single line.
 
@@ -208,6 +219,7 @@ here so the deck row can stay a single line.
   as the configured note template (§7 template editor) will produce it,
   cloze blanked on the front, revealed on the back — so the user sees the
   actual flashcard, not just the raw field data, before it's ever exported.
+  Now its own panel — see the superseded note above.
 
 ## 8. Note type / template editor
 
