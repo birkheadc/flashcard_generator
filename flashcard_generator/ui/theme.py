@@ -252,14 +252,14 @@ QToolBar#mainToolbar QToolButton:disabled {{
     border-color: {BORDER_HAIRLINE};
 }}
 
-QToolButton#primaryToolButton {{
+QToolBar#mainToolbar QToolButton#primaryToolButton {{
     background: {ACTION_PRIMARY};
     border-color: {ACTION_PRIMARY};
     color: {PAPER_0};
     font-weight: {WEIGHT_SEMIBOLD};
 }}
 
-QToolButton#primaryToolButton:hover:!disabled {{
+QToolBar#mainToolbar QToolButton#primaryToolButton:hover:!disabled {{
     background: {ACTION_PRIMARY_HOVER};
 }}
 
@@ -308,17 +308,18 @@ QPushButton#zoomStepButton {{
     border-radius: {RADIUS_1}px;
 }}
 
-QPushButton#rowPlayButton {{
-    padding: 1px {SPACE_3}px;
-    min-height: {CONTROL_HEIGHT_SM}px;
+QPushButton#rowIconButton {{
+    padding: 0;
     border: none;
     border-radius: {RADIUS_1}px;
     background: transparent;
-    color: {ACTION_PRIMARY};
 }}
 
-QPushButton#rowPlayButton:hover {{
-    background: {ACCENT_SOFT};
+QPushButton#rowIconButton:hover {{
+    /* Deliberately not ACCENT_SOFT/SURFACE_SELECTED (same color) — a
+    selected row already has that fill, so a same-color hover would be
+    invisible on it. This needs to stand out against both. */
+    background: {CYPRUS_300};
 }}
 
 QLabel#stateBadge {{

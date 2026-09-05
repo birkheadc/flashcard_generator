@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from ..audio.waveform import WaveformData
 from . import theme
 from .format_time import format_time
-from .waveform_widget import WaveformWidget
+from .waveform_widget import EDGE_MARGIN, MIN_HEIGHT, WaveformWidget, time_to_x
 
 MIN_ZOOM = 1.0
 MAX_ZOOM = 64.0
@@ -75,7 +75,8 @@ class TimeRulerWidget(QWidget):
         height = self.height()
 
         if self._duration_seconds > 0 and width > 0:
-            pixels_per_second = width / self._duration_seconds
+            usable_width = max(width - 2 * EDGE_MARGIN, 0.0)
+            pixels_per_second = usable_width / self._duration_seconds if usable_width > 0 else 0.0
             interval = _nice_tick_interval(pixels_per_second)
 
             painter.setPen(QPen(QColor(theme.TEXT_DISABLED)))
@@ -85,17 +86,18 @@ class TimeRulerWidget(QWidget):
                 t = i * interval
                 if t > self._duration_seconds:
                     break
-                x = int(t * pixels_per_second)
+                x = int(time_to_x(t, self._duration_seconds, width))
                 painter.drawLine(x, height - 6, x, height)
                 label = f"{t:.1f}s" if interval < 1 else format_time(t)
                 # Centered directly above its tick; skipped rather than
-                # clamped if that would run the label off either edge.
+                # clamped if that would run the label off either edge. The
+                # EDGE_MARGIN inset on the first and last tick's position is
+                # what normally keeps this from triggering at either end.
                 label_x = x - metrics.horizontalAdvance(label) // 2
                 if label_x >= 0 and label_x + metrics.horizontalAdvance(label) <= width:
                     painter.drawText(label_x, height - 8, label)
 
-            fraction = min(max(self._position_seconds / self._duration_seconds, 0.0), 1.0)
-            playhead_x = int(fraction * width)
+            playhead_x = int(time_to_x(self._position_seconds, self._duration_seconds, width))
             painter.setPen(QPen(QColor(theme.INK_0), 2))
             painter.drawLine(playhead_x, 0, playhead_x, height)
 
@@ -179,10 +181,31 @@ class WaveformView(QWidget):
 
         self._scroll_area = _HorizontalScrollArea(self)
         self._scroll_area.setWidgetResizable(False)
-        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Always on, not as-needed: the horizontal scrollbar's height would
+        # otherwise come and go as zoom crosses the fit threshold, changing
+        # the viewport height out from under _relayout_content() *after* it
+        # already sized the content against the old (taller) viewport,
+        # leaving the waveform's bottom edge clipped with no way to scroll
+        # to it (vertical scrolling is deliberately off, see below).
+        # Reserving the space unconditionally keeps the viewport height
+        # stable across zoom changes.
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll_area.zoom_requested.connect(self._on_zoom_wheel)
         outer_layout.addWidget(self._scroll_area)
+
+        # setWidgetResizable(False) means the scroll area never asks its
+        # content widget's own minimum size, so nothing here would otherwise
+        # tell an enclosing layout (up through MainWindow) how tall this
+        # needs to be — the window could shrink until the ruler and the
+        # waveform's own floor (WaveformWidget.MIN_HEIGHT) no longer fit
+        # above the (always-on) horizontal scrollbar, clipping the bottom of
+        # the waveform with no way to scroll to it. Setting this explicitly
+        # is what makes MainWindow's own auto-computed minimum size actually
+        # account for it.
+        scrollbar_height = self._scroll_area.horizontalScrollBar().sizeHint().height()
+        frame_width = self._scroll_area.frameWidth()
+        self.setMinimumHeight(RULER_HEIGHT + MIN_HEIGHT + scrollbar_height + 2 * frame_width)
 
         self._content = QWidget()
         content_layout = QVBoxLayout(self._content)
@@ -362,7 +385,7 @@ class WaveformView(QWidget):
         if viewport_width <= 0:
             return
         content_width = max(viewport_width, round(viewport_width * self._zoom))
-        waveform_height = max(self._waveform.minimumHeight(), viewport_height - RULER_HEIGHT)
+        waveform_height = max(MIN_HEIGHT, viewport_height - RULER_HEIGHT)
 
         self._ruler.setFixedWidth(content_width)
         self._waveform.setFixedSize(content_width, waveform_height)

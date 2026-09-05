@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -14,10 +14,55 @@ _EDGE_HIT_PIXELS = 6.0
 # Dragging an edge can't collapse a region to zero (or negative) width.
 _MIN_REGION_DURATION = 0.05
 
+# Bars are drawn at a fixed on-screen pitch rather than one line per pixel.
+# Zooming widens the widget (see WaveformView), which fits more of these
+# fixed-width bars across the same total duration — so zooming in raises
+# how much of the timeline each bar covers on-screen (fidelity), rather
+# than stretching existing bars wider.
+_BAR_WIDTH = 3.0
+_BAR_GAP = 2.0
+_BAR_PITCH = _BAR_WIDTH + _BAR_GAP
+
+# Keeps near-silent stretches visible as a thin bar instead of vanishing.
+_MIN_BAR_HALF_HEIGHT = 1.5
+
+# Floor for the widget's on-screen height, independent of however tall a
+# previous _relayout_content() pass happened to make it — see WaveformView
+# (waveform_view.py), which reads this rather than the widget's current
+# minimumHeight() to size it against the scroll viewport, since setFixedSize
+# there mutates minimumHeight() too and would otherwise ratchet it upward.
+MIN_HEIGHT = 150
+
+# Blank space reserved at each edge of the track so the ruler's first and
+# last tick labels (see TimeRulerWidget in waveform_view.py) have room to
+# render in full, rather than being centered on the very edge pixel and
+# clipped off the widget. WaveformWidget and TimeRulerWidget are always the
+# same width and must agree on this inset so a given x still means the same
+# point in time in both.
+EDGE_MARGIN = 28.0
+
+
+def time_to_x(t: float, duration_seconds: float, width: float, margin: float = EDGE_MARGIN) -> float:
+    if duration_seconds <= 0:
+        return 0.0
+    usable_width = max(width - 2 * margin, 0.0)
+    fraction = min(max(t / duration_seconds, 0.0), 1.0)
+    return margin + fraction * usable_width
+
+
+def x_to_time(x: float, duration_seconds: float, width: float, margin: float = EDGE_MARGIN) -> float:
+    if duration_seconds <= 0 or width <= 0:
+        return 0.0
+    usable_width = max(width - 2 * margin, 0.0)
+    if usable_width <= 0:
+        return 0.0
+    fraction = min(max((x - margin) / usable_width, 0.0), 1.0)
+    return fraction * duration_seconds
+
 
 class WaveformWidget(QWidget):
-    """Paints min/max peak columns for a loaded WaveformData, a playhead,
-    existing clip regions, and a pending selection.
+    """Paints fixed-width amplitude bars for a loaded WaveformData, a
+    playhead, existing clip regions, and a pending selection.
 
     - Plain click/drag: seek (emits seek_requested).
     - Shift+click+drag: select a region (emits selection_changed).
@@ -41,7 +86,7 @@ class WaveformWidget(QWidget):
         self._selection_anchor: float | None = None
         self._editing_index: int | None = None
         self._editing_edge: str | None = None  # "start" | "end"
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(MIN_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setMouseTracking(True)
 
@@ -109,30 +154,48 @@ class WaveformWidget(QWidget):
                     painter, self._selection[0], self._selection[1], height, QColor(200, 85, 61, 45)
                 )
 
+        track_left = EDGE_MARGIN
+        track_right = max(width - EDGE_MARGIN, track_left)
         painter.setPen(QPen(QColor(theme.INK_5)))
-        painter.drawLine(0, int(mid_y), width, int(mid_y))
+        painter.drawLine(int(track_left), int(mid_y), int(track_right), int(mid_y))
 
-        if self._data is not None and width > 0:
+        usable_width = track_right - track_left
+        if self._data is not None and width > 0 and usable_width > 0:
             peaks_min = self._data.peaks_min
             peaks_max = self._data.peaks_max
             num_columns = len(peaks_min)
-            painter.setPen(QPen(QColor(theme.ACCENT)))
-            # Only draw the columns Qt actually asked us to repaint. At high
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(theme.ACCENT))
+            # Only draw the bars Qt actually asked us to repaint. At high
             # zoom this widget can be far wider than the visible viewport, so
             # painting the full width on every playhead update would scale
             # with zoom instead of with what's on screen.
             dirty = event.rect()
-            x_start = max(0, dirty.left())
-            x_end = min(width, dirty.right() + 1)
-            for x in range(x_start, x_end):
-                idx = min(int(x * num_columns / width), num_columns - 1)
-                y_top = mid_y - float(peaks_max[idx]) * mid_y
-                y_bottom = mid_y - float(peaks_min[idx]) * mid_y
-                painter.drawLine(x, int(y_top), x, int(y_bottom))
+            first_bar = max(0, int((dirty.left() - track_left) // _BAR_PITCH))
+            last_bar = min(
+                int(usable_width // _BAR_PITCH), int((dirty.right() - track_left) // _BAR_PITCH)
+            )
+            for bar in range(first_bar, last_bar + 1):
+                x = track_left + bar * _BAR_PITCH
+                # Each bar's height is the average amplitude of the slice of
+                # source columns its fixed-width footprint covers, rather
+                # than a single column sampled at its position. That's what
+                # lets zooming in reveal more of the underlying detail: the
+                # same bar width now maps to a narrower, less-averaged slice.
+                col_start = min(int((x - track_left) / usable_width * num_columns), num_columns - 1)
+                col_end = max(
+                    col_start + 1,
+                    min(int((x + _BAR_PITCH - track_left) / usable_width * num_columns), num_columns),
+                )
+                amplitude = float((peaks_max[col_start:col_end] - peaks_min[col_start:col_end]).mean()) / 2.0
+                half_height = max(amplitude * mid_y, _MIN_BAR_HALF_HEIGHT)
+                painter.drawRoundedRect(
+                    QRectF(x, mid_y - half_height, _BAR_WIDTH, half_height * 2), 1.0, 1.0
+                )
+            painter.setBrush(Qt.BrushStyle.NoBrush)
 
         if self._duration_seconds > 0 and width > 0 and self._data is not None:
-            fraction = min(max(self._position_seconds / self._duration_seconds, 0.0), 1.0)
-            playhead_x = int(fraction * width)
+            playhead_x = int(self._x_at_time(self._position_seconds))
             painter.setPen(QPen(QColor(theme.INK_0), 2))
             painter.drawLine(playhead_x, 0, playhead_x, height)
 
@@ -228,15 +291,10 @@ class WaveformWidget(QWidget):
         )
 
     def _time_at_x(self, x: float) -> float:
-        if self._duration_seconds <= 0 or self.width() <= 0:
-            return 0.0
-        fraction = min(max(x / self.width(), 0.0), 1.0)
-        return fraction * self._duration_seconds
+        return x_to_time(x, self._duration_seconds, self.width())
 
     def _x_at_time(self, t: float) -> float:
-        if self._duration_seconds <= 0:
-            return 0.0
-        return t / self._duration_seconds * self.width()
+        return time_to_x(t, self._duration_seconds, self.width())
 
     def _seek_to_x(self, x: float) -> None:
         if self._duration_seconds <= 0 or self.width() <= 0:

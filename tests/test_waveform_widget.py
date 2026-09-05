@@ -127,15 +127,15 @@ def test_selection_changed_emits_on_set_and_clear():
 
 def test_drag_select_with_shift_then_release():
     widget = WaveformWidget()
-    widget.resize(200, 150)  # 20px/sec
+    widget.resize(200, 150)
     widget.set_waveform(_make_data(duration=10.0))
 
     received = []
     widget.selection_changed.connect(received.append)
 
-    widget.mousePressEvent(_mouse_event(x=60, shift=True))  # 3.0s
-    widget.mouseMoveEvent(_mouse_event(x=120, buttons=True, shift=True))  # 6.0s
-    widget.mouseReleaseEvent(_mouse_event(x=120))
+    widget.mousePressEvent(_mouse_event(x=widget._x_at_time(3.0), shift=True))
+    widget.mouseMoveEvent(_mouse_event(x=widget._x_at_time(6.0), buttons=True, shift=True))
+    widget.mouseReleaseEvent(_mouse_event(x=widget._x_at_time(6.0)))
 
     assert widget.selection == pytest.approx((3.0, 6.0), abs=0.05)
     assert received[-1] == pytest.approx((3.0, 6.0), abs=0.05)
@@ -170,47 +170,47 @@ def test_new_waveform_resets_selection():
 
 def test_drag_selection_start_edge_resizes_it():
     widget = WaveformWidget()
-    widget.resize(200, 150)  # 20px/sec
+    widget.resize(200, 150)
     widget.set_waveform(_make_data(duration=10.0))
-    widget.set_selection(3.0, 6.0)  # edges at x=60 and x=120
+    widget.set_selection(3.0, 6.0)
 
-    widget.mousePressEvent(_mouse_event(x=60))  # grab start edge
+    widget.mousePressEvent(_mouse_event(x=widget._x_at_time(3.0)))  # grab start edge
     assert widget._drag_mode == "edit_selection"
 
-    widget.mouseMoveEvent(_mouse_event(x=20, buttons=True))  # drag to 1.0s
-    widget.mouseReleaseEvent(_mouse_event(x=20))
+    widget.mouseMoveEvent(_mouse_event(x=widget._x_at_time(1.0), buttons=True))
+    widget.mouseReleaseEvent(_mouse_event(x=widget._x_at_time(1.0)))
 
     assert widget.selection == pytest.approx((1.0, 6.0), abs=0.05)
 
 
 def test_drag_selection_end_edge_resizes_it():
     widget = WaveformWidget()
-    widget.resize(200, 150)  # 20px/sec
+    widget.resize(200, 150)
     widget.set_waveform(_make_data(duration=10.0))
-    widget.set_selection(3.0, 6.0)  # edges at x=60 and x=120
+    widget.set_selection(3.0, 6.0)
 
-    widget.mousePressEvent(_mouse_event(x=120))  # grab end edge
-    widget.mouseMoveEvent(_mouse_event(x=160, buttons=True))  # drag to 8.0s
-    widget.mouseReleaseEvent(_mouse_event(x=160))
+    widget.mousePressEvent(_mouse_event(x=widget._x_at_time(6.0)))  # grab end edge
+    widget.mouseMoveEvent(_mouse_event(x=widget._x_at_time(8.0), buttons=True))
+    widget.mouseReleaseEvent(_mouse_event(x=widget._x_at_time(8.0)))
 
     assert widget.selection == pytest.approx((3.0, 8.0), abs=0.05)
 
 
 def test_drag_clip_region_edge_emits_clip_region_edited_on_release():
     widget = WaveformWidget()
-    widget.resize(200, 150)  # 20px/sec
+    widget.resize(200, 150)
     widget.set_waveform(_make_data(duration=10.0))
-    widget.set_clip_regions([(3.0, 6.0)])  # edges at x=60 and x=120
+    widget.set_clip_regions([(3.0, 6.0)])
 
     received = []
     widget.clip_region_edited.connect(lambda *args: received.append(args))
 
-    widget.mousePressEvent(_mouse_event(x=120))  # grab clip's end edge
+    widget.mousePressEvent(_mouse_event(x=widget._x_at_time(6.0)))  # grab clip's end edge
     assert widget._drag_mode == "edit_clip"
-    widget.mouseMoveEvent(_mouse_event(x=160, buttons=True))  # drag to 8.0s
+    widget.mouseMoveEvent(_mouse_event(x=widget._x_at_time(8.0), buttons=True))
 
     assert received == []  # not emitted until release
-    widget.mouseReleaseEvent(_mouse_event(x=160))
+    widget.mouseReleaseEvent(_mouse_event(x=widget._x_at_time(8.0)))
 
     assert len(received) == 1
     index, start, end = received[0]
@@ -221,13 +221,13 @@ def test_drag_clip_region_edge_emits_clip_region_edited_on_release():
 
 def test_drag_clip_edge_cannot_cross_the_other_edge():
     widget = WaveformWidget()
-    widget.resize(200, 150)  # 20px/sec
+    widget.resize(200, 150)
     widget.set_waveform(_make_data(duration=10.0))
-    widget.set_clip_regions([(3.0, 6.0)])  # edges at x=60 and x=120
+    widget.set_clip_regions([(3.0, 6.0)])
 
-    widget.mousePressEvent(_mouse_event(x=60))  # grab clip's start edge
-    widget.mouseMoveEvent(_mouse_event(x=140, buttons=True))  # drag past end edge
-    widget.mouseReleaseEvent(_mouse_event(x=140))
+    widget.mousePressEvent(_mouse_event(x=widget._x_at_time(3.0)))  # grab clip's start edge
+    widget.mouseMoveEvent(_mouse_event(x=widget._x_at_time(9.0), buttons=True))  # drag past end edge
+    widget.mouseReleaseEvent(_mouse_event(x=widget._x_at_time(9.0)))
 
     start, end = widget._clip_regions[0]
     assert start < end

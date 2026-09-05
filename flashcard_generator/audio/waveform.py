@@ -5,10 +5,15 @@ from dataclasses import dataclass
 import numpy as np
 import soundfile as sf
 
-# Fixed resolution the audio file is reduced to on load. The widget resamples
-# this down to whatever pixel width it's actually drawn at, so we don't need
-# to re-read the source file on every resize.
-NUM_COLUMNS = 4000
+# Fixed resolution the audio file is reduced to on load, so we don't need to
+# re-read the source file on every resize or zoom change. The waveform is
+# drawn as fixed-width bars that each average a slice of these columns;
+# zooming in shrinks the slice a bar covers, revealing more real detail
+# instead of stretching pixels. This needs to comfortably exceed the widest
+# any single bar's slice will ever get *narrower* than one column — i.e. it
+# should stay ahead of MAX_ZOOM in waveform_view.py — or zooming past that
+# point just repeats the same column across neighboring bars.
+NUM_COLUMNS = 20_000
 
 # Long recordings haven't been exercised end-to-end yet (memory, UI
 # responsiveness, playback). Importing past this warns and requires

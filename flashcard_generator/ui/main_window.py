@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -31,7 +32,8 @@ from ..clips import Clip
 from ..items import Item, ItemList
 from ..session import default_session_path, load_session, save_session
 from . import theme
-from .format_time import format_time
+from .format_time import format_time, format_time_ago
+from .icons import icon
 from .waveform_view import WaveformView
 
 SUPPORTED_EXTENSIONS = ["wav", "flac", "ogg", "mp3", "aiff"]
@@ -44,16 +46,22 @@ NOT_YET_IMPLEMENTED = "Not yet implemented — see ROADMAP.md"
 # Clip table columns and their fixed widths (Sentence is the one column that
 # stretches). Widths are fixed rather than content-driven, per the mockup's
 # own column layout (Bootstrapper.dc.html's header row: Range 112px, State
-# 96px, Play 52px), so an item flipping between "Drafted"/"Not drafted"
-# doesn't reflow the whole table.
+# 96px), so an item flipping between "Drafted"/"Not drafted" doesn't reflow
+# the whole table. The Actions column (play + delete) isn't in the mockup
+# and is sized to fit both icon buttons.
 RANGE_COLUMN = 0
 TEXT_COLUMN = 1
 STATE_COLUMN = 2
-PLAY_COLUMN = 3
+ACTIONS_COLUMN = 3
 
 RANGE_COLUMN_WIDTH = 132
 STATE_COLUMN_WIDTH = 118
-PLAY_COLUMN_WIDTH = 52
+ACTIONS_COLUMN_WIDTH = 76
+
+# Fixed size of each icon-only button in the Actions column, and the row
+# height that comfortably fits them without clipping into the row below.
+ROW_ICON_BUTTON_SIZE = 26
+ROW_HEIGHT = 40
 
 
 def _lock_toggle_button_width(button: QPushButton, *texts: str) -> None:
@@ -61,9 +69,10 @@ def _lock_toggle_button_width(button: QPushButton, *texts: str) -> None:
     button that changes text when clicked (Play/Pause and the like) doesn't
     change size as it toggles."""
     metrics = button.fontMetrics()
-    # Comfortably covers the QSS's own horizontal padding/border so text
-    # never brushes the edge in either state.
-    padding = 32
+    # Comfortably covers the QSS's own horizontal padding/border, plus the
+    # icon and its spacing before the text, so text never brushes the edge
+    # in either state.
+    padding = 32 + (24 if not button.icon().isNull() else 0)
     button.setFixedWidth(max(metrics.horizontalAdvance(t) for t in texts) + padding)
 
 
@@ -88,7 +97,7 @@ class ItemTextEdit(QPlainTextEdit):
 
 
 class ItemTableWidget(QTableWidget):
-    """The clip deck: one row per item, columns Range/Sentence/State/Play.
+    """The clip deck: one row per item, columns Range/Sentence/State/Actions.
 
     Delete/Backspace is bound to discarding the selected item, per
     DESIGN.md §12's keyboard model. Also adds a couple of QListWidget-style
@@ -100,12 +109,16 @@ class ItemTableWidget(QTableWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(0, 4, parent)
-        # No header text for the Play column — it's just a row of icon
+        # No header text for the Actions column — it's just a row of icon
         # buttons, a label would only add noise.
         self.setHorizontalHeaderLabels(
             [theme.section_label_text(t) for t in ("Range", "Sentence", "State", "")]
         )
         self.verticalHeader().setVisible(False)
+        # Rows default to a height driven by the text font, which is too
+        # short to fit the Actions column's icon buttons without clipping
+        # into the row below — so every row gets a fixed, taller height.
+        self.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -120,10 +133,10 @@ class ItemTableWidget(QTableWidget):
         header.setSectionResizeMode(RANGE_COLUMN, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(TEXT_COLUMN, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(STATE_COLUMN, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(PLAY_COLUMN, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(ACTIONS_COLUMN, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(RANGE_COLUMN, RANGE_COLUMN_WIDTH)
         self.setColumnWidth(STATE_COLUMN, STATE_COLUMN_WIDTH)
-        self.setColumnWidth(PLAY_COLUMN, PLAY_COLUMN_WIDTH)
+        self.setColumnWidth(ACTIONS_COLUMN, ACTIONS_COLUMN_WIDTH)
 
     def setCurrentRow(self, row: int) -> None:
         self.setCurrentCell(row, RANGE_COLUMN)
@@ -160,10 +173,16 @@ class MainWindow(QMainWindow):
         self._loop_source: str | None = None  # "item" | "selection" | None
         self._loop_item_index: int | None = None
         self._loading_item_text = False
+        self._last_autosave_time: datetime | None = None
 
         self._build_ui()
         self._build_toolbar()
         self._restore_session()
+
+        self._autosave_label_timer = QTimer(self)
+        self._autosave_label_timer.setInterval(15_000)
+        self._autosave_label_timer.timeout.connect(self._update_autosave_label)
+        self._autosave_label_timer.start()
 
     # -- layout construction ------------------------------------------------
 
@@ -236,12 +255,14 @@ class MainWindow(QMainWindow):
         transport_layout.setContentsMargins(12, 6, 12, 6)
 
         self._play_button = QPushButton("Play")
+        self._play_button.setIcon(icon("mdi6.play"))
         self._play_button.setEnabled(False)
         self._play_button.clicked.connect(self._toggle_playback)
         _lock_toggle_button_width(self._play_button, "Play", "Pause")
         transport_layout.addWidget(self._play_button)
 
         self._play_selection_button = QPushButton("Play Selection (Loop)")
+        self._play_selection_button.setIcon(icon("mdi6.repeat-variant"))
         self._play_selection_button.setEnabled(False)
         self._play_selection_button.clicked.connect(self._on_play_selection_clicked)
         _lock_toggle_button_width(self._play_selection_button, "Play Selection (Loop)", "Stop")
@@ -254,11 +275,13 @@ class MainWindow(QMainWindow):
         transport_layout.addSpacing(8)
 
         split_at_playhead_button = QPushButton("Split at Playhead")
+        split_at_playhead_button.setIcon(icon("mdi6.call-split"))
         split_at_playhead_button.setEnabled(False)
         split_at_playhead_button.setToolTip(NOT_YET_IMPLEMENTED)
         transport_layout.addWidget(split_at_playhead_button)
 
         self._add_item_button = QPushButton("Clip from Selection")
+        self._add_item_button.setIcon(icon("mdi6.content-cut"))
         self._add_item_button.setEnabled(False)
         self._add_item_button.setToolTip("Select a region on the waveform (Shift+drag) first")
         self._add_item_button.clicked.connect(self._on_add_item_clicked)
@@ -347,6 +370,7 @@ class MainWindow(QMainWindow):
         body_layout.addWidget(self._section_label("Audio"))
         audio_row = QHBoxLayout()
         self._preview_button = QPushButton("Loop Preview")
+        self._preview_button.setIcon(icon("mdi6.repeat-variant"))
         self._preview_button.clicked.connect(self._on_preview_clicked)
         _lock_toggle_button_width(self._preview_button, "Loop Preview", "Stop Preview")
         audio_row.addWidget(self._preview_button)
@@ -356,9 +380,11 @@ class MainWindow(QMainWindow):
         body_layout.addWidget(self._section_label("Reorder"))
         reorder_row = QHBoxLayout()
         self._move_up_button = QPushButton("Move Up")
+        self._move_up_button.setIcon(icon("mdi6.chevron-up"))
         self._move_up_button.clicked.connect(self._on_move_item_up)
         reorder_row.addWidget(self._move_up_button)
         self._move_down_button = QPushButton("Move Down")
+        self._move_down_button.setIcon(icon("mdi6.chevron-down"))
         self._move_down_button.clicked.connect(self._on_move_item_down)
         reorder_row.addWidget(self._move_down_button)
         body_layout.addLayout(reorder_row)
@@ -372,6 +398,7 @@ class MainWindow(QMainWindow):
         footer_layout.setContentsMargins(10, 6, 10, 6)
         footer_layout.addStretch()
         self._remove_item_button = QPushButton("Discard Clip")
+        self._remove_item_button.setIcon(icon("mdi6.trash-can-outline", color=theme.ACTION_DANGER))
         self._remove_item_button.setObjectName("dangerButton")
         self._remove_item_button.clicked.connect(self._on_remove_item_clicked)
         footer_layout.addWidget(self._remove_item_button)
@@ -384,8 +411,10 @@ class MainWindow(QMainWindow):
         bar = QStatusBar(self)
         bar.setObjectName("mainStatusBar")
         self._status_items_label = QLabel("0 items")
+        self._status_items_label.setContentsMargins(12, 0, 0, 0)
         bar.addWidget(self._status_items_label)
         self._status_autosave_label = QLabel("")
+        self._status_autosave_label.setContentsMargins(0, 0, 12, 0)
         bar.addPermanentWidget(self._status_autosave_label)
         self.setStatusBar(bar)
 
@@ -393,24 +422,28 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main", self)
         toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.addToolBar(toolbar)
 
-        import_action = QAction("Import Audio", self)
+        import_action = QAction(icon("mdi6.folder-open-outline", color=theme.PAPER_0), "Import Audio", self)
         import_action.setShortcut("Ctrl+O")
         import_action.triggered.connect(self._import_file)
         toolbar.addAction(import_action)
         toolbar.widgetForAction(import_action).setObjectName("primaryToolButton")
 
-        record_action = QAction("Record in-app", self)
+        record_action = QAction(icon("mdi6.microphone-outline"), "Record in-app", self)
         record_action.setEnabled(False)
         record_action.setToolTip("Not yet implemented")
         toolbar.addAction(record_action)
 
         toolbar.addSeparator()
 
-        for text in ("Import Transcript", "Suggest Clips", "Align Transcript"):
-            stub_action = QAction(text, self)
+        for text, icon_name in (
+            ("Import Transcript", "mdi6.file-document-outline"),
+            ("Suggest Clips", "mdi6.auto-fix"),
+            ("Align Transcript", "mdi6.sync"),
+        ):
+            stub_action = QAction(icon(icon_name), text, self)
             stub_action.setEnabled(False)
             stub_action.setToolTip(NOT_YET_IMPLEMENTED)
             toolbar.addAction(stub_action)
@@ -419,15 +452,18 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        for text in ("Note Template", "Export"):
-            stub_action = QAction(text, self)
+        for text, icon_name in (
+            ("Note Template", "mdi6.card-text-outline"),
+            ("Export", "mdi6.export-variant"),
+        ):
+            stub_action = QAction(icon(icon_name), text, self)
             stub_action.setEnabled(False)
             stub_action.setToolTip(NOT_YET_IMPLEMENTED)
             toolbar.addAction(stub_action)
 
         toolbar.addSeparator()
 
-        preferences_action = QAction("Preferences", self)
+        preferences_action = QAction(icon("mdi6.cog-outline"), "Preferences", self)
         preferences_action.setEnabled(False)
         preferences_action.setToolTip(NOT_YET_IMPLEMENTED)
         toolbar.addAction(preferences_action)
@@ -481,7 +517,14 @@ class MainWindow(QMainWindow):
         if self._audio_path is None:
             return
         save_session(self._session_path, self._audio_path, self._items)
-        self._status_autosave_label.setText("autosaved")
+        self._last_autosave_time = datetime.now()
+        self._update_autosave_label()
+
+    def _update_autosave_label(self) -> None:
+        if self._last_autosave_time is None:
+            return
+        elapsed = (datetime.now() - self._last_autosave_time).total_seconds()
+        self._status_autosave_label.setText(f"Autosaved {format_time_ago(elapsed)}")
 
     def _confirm_discard_items(self) -> bool:
         count = len(self._items)
@@ -517,8 +560,9 @@ class MainWindow(QMainWindow):
         )
 
     def _toggle_playback(self) -> None:
+        was_playing = self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
         self._stop_loop()
-        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+        if was_playing:
             self._player.pause()
         else:
             self._player.play()
@@ -546,8 +590,10 @@ class MainWindow(QMainWindow):
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         if state == QMediaPlayer.PlaybackState.PlayingState:
             self._play_button.setText("Pause")
+            self._play_button.setIcon(icon("mdi6.pause"))
         else:
             self._play_button.setText("Play")
+            self._play_button.setIcon(icon("mdi6.play"))
 
     def _on_player_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
         if error != QMediaPlayer.Error.NoError:
@@ -674,8 +720,12 @@ class MainWindow(QMainWindow):
         self._player.setPosition(int(loop_range[0] * 1000))
         self._player.play()
         self._preview_button.setText("Stop Preview" if source == "item" else "Loop Preview")
+        self._preview_button.setIcon(icon("mdi6.stop" if source == "item" else "mdi6.repeat-variant"))
         self._play_selection_button.setText(
             "Stop" if source == "selection" else "Play Selection (Loop)"
+        )
+        self._play_selection_button.setIcon(
+            icon("mdi6.stop" if source == "selection" else "mdi6.repeat-variant")
         )
 
     def _stop_loop(self) -> None:
@@ -686,7 +736,9 @@ class MainWindow(QMainWindow):
         self._loop_item_index = None
         self._player.pause()
         self._preview_button.setText("Loop Preview")
+        self._preview_button.setIcon(icon("mdi6.repeat-variant"))
         self._play_selection_button.setText("Play Selection (Loop)")
+        self._play_selection_button.setIcon(icon("mdi6.repeat-variant"))
 
     def _refresh_item_list_widget(self, select_index: int | None = None) -> None:
         if select_index is None:
@@ -722,11 +774,7 @@ class MainWindow(QMainWindow):
 
         self._item_list_widget.setCellWidget(row, STATE_COLUMN, self._make_state_badge(ready))
 
-        play_button = QPushButton("▶")
-        play_button.setObjectName("rowPlayButton")
-        play_button.setToolTip("Loop-play this clip")
-        play_button.clicked.connect(lambda _checked=False, r=row: self._on_row_play_clicked(r))
-        self._item_list_widget.setCellWidget(row, PLAY_COLUMN, play_button)
+        self._item_list_widget.setCellWidget(row, ACTIONS_COLUMN, self._make_row_actions(row))
 
     def _make_state_badge(self, ready: bool) -> QWidget:
         badge = QLabel("Drafted" if ready else "Not drafted")
@@ -740,9 +788,39 @@ class MainWindow(QMainWindow):
         container_layout.addStretch()
         return container
 
+    def _make_row_actions(self, row: int) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addStretch()
+
+        play_button = QPushButton()
+        play_button.setIcon(icon("mdi6.play", color=theme.ACTION_PRIMARY))
+        play_button.setObjectName("rowIconButton")
+        play_button.setToolTip("Loop-play this clip")
+        play_button.setFixedSize(ROW_ICON_BUTTON_SIZE, ROW_ICON_BUTTON_SIZE)
+        play_button.clicked.connect(lambda _checked=False, r=row: self._on_row_play_clicked(r))
+        layout.addWidget(play_button)
+
+        delete_button = QPushButton()
+        delete_button.setIcon(icon("mdi6.trash-can-outline", color=theme.ACTION_DANGER))
+        delete_button.setObjectName("rowIconButton")
+        delete_button.setToolTip("Discard this clip")
+        delete_button.setFixedSize(ROW_ICON_BUTTON_SIZE, ROW_ICON_BUTTON_SIZE)
+        delete_button.clicked.connect(lambda _checked=False, r=row: self._on_row_delete_clicked(r))
+        layout.addWidget(delete_button)
+
+        layout.addStretch()
+        return container
+
     def _on_row_play_clicked(self, row: int) -> None:
         self._item_list_widget.setCurrentRow(row)
         self._on_preview_clicked()
+
+    def _on_row_delete_clicked(self, row: int) -> None:
+        self._item_list_widget.setCurrentRow(row)
+        self._on_remove_item_clicked()
 
     def _update_item_buttons_enabled(self) -> None:
         index = self._item_list_widget.currentRow()
