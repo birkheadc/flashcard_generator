@@ -1088,12 +1088,17 @@ class MainWindow(QMainWindow):
         badge = QLabel(status_text)
         badge.setObjectName("stateBadge")
         badge.setProperty("tone", tone)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Expanding (rather than the previous fixed-to-text width + stretch)
+        # so every badge fills the column at the same width regardless of
+        # its text — "Ready"/"No cloze"/"Not drafted" no longer render as
+        # differently sized pills.
+        badge.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         container = QWidget()
         container_layout = QHBoxLayout(container)
         container_layout.setContentsMargins(6, 0, 6, 0)
         container_layout.addWidget(badge)
-        container_layout.addStretch()
         return container
 
     def _make_row_actions(self, row: int) -> QWidget:

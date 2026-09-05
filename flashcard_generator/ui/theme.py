@@ -322,8 +322,11 @@ QPushButton#rowIconButton {{
 QPushButton#rowIconButton:hover {{
     /* Deliberately not ACCENT_SOFT/SURFACE_SELECTED (same color) — a
     selected row already has that fill, so a same-color hover would be
-    invisible on it. This needs to stand out against both. */
-    background: {CYPRUS_300};
+    invisible on it. This needs to stand out against both, but a saturated
+    accent (formerly CYPRUS_300) clashed with the red danger icon and read
+    as a stray status color rather than a hover state, so it's a neutral
+    paper tone instead. */
+    background: {PAPER_4};
 }}
 
 QLabel#stateBadge {{
