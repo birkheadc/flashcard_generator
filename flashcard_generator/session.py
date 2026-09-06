@@ -38,6 +38,7 @@ class SessionData:
     items: list[Item]
     transcript_text: str
     template: NoteTemplate
+    deck_name: str
 
 
 def save_session(
@@ -46,6 +47,7 @@ def save_session(
     items: ItemList,
     transcript_text: str = "",
     template: NoteTemplate | None = None,
+    deck_name: str = "",
 ) -> None:
     """Best-effort autosave: failures are swallowed rather than surfaced,
     since this runs after nearly every edit and shouldn't interrupt work.
@@ -54,6 +56,7 @@ def save_session(
         template = NoteTemplate()
     data = {
         "audio_path": audio_path,
+        "deck_name": deck_name,
         "items": [
             {
                 "start_seconds": item.clip.start_seconds,
@@ -109,6 +112,7 @@ def load_session(path: Path) -> SessionData | None:
             items=items,
             transcript_text=raw.get("transcript_text", ""),
             template=template,
+            deck_name=raw.get("deck_name", ""),
         )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None

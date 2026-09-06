@@ -240,7 +240,7 @@ QToolBar#mainToolbar QToolButton {{
     background: {PAPER_0};
     border: {BORDER_WIDTH}px solid {BORDER_HAIRLINE};
     border-radius: {RADIUS_2}px;
-    padding: {SPACE_2}px {SPACE_5}px;
+    padding: {SPACE_2}px {SPACE_4}px;
     color: {TEXT_BODY};
     min-height: {CONTROL_HEIGHT}px;
 }}

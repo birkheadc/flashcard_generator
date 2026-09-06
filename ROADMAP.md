@@ -16,8 +16,8 @@ machine. Each phase is independently verifiable before moving to the next.
 > own phase lands; Phase 4 below is the first of those.
 
 Status: **Phase 3 done.** **Phase 7 pulled forward and done early** (see
-note below). **Phase 4 done.** **Phase 5 done.** **Phase 5.5 done.** Next
-up: **Phase 6**.
+note below). **Phase 4 done.** **Phase 5 done.** **Phase 5.5 done.**
+**Phase 6 done.** Next up: **Phase 8** (GPU machine).
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
@@ -312,12 +312,81 @@ PySide6 app skeleton, `MainWindow` renders. Done.
   Phase 6 export needs that same logic to actually generate them — no
   reason to build a card-switcher here first.
 
-## Phase 6 — Anki export (`.apkg`)
+## Phase 6 — Anki export (`.apkg`) ✅
 - `genanki` integration: build `Model`/cloze model from the configured
   template, embed clip audio as media.
 - Export action → produces a single `.apkg` file.
 - **Verify:** export a deck, import the `.apkg` into a real Anki
   install, confirm cards display correctly and audio plays.
+
+- **Implemented:** `flashcard_generator/export.py` builds a `genanki.Model`
+  (`model_type=genanki.Model.CLOZE`) directly from the session's
+  `NoteTemplate` — fields map 1:1, `front_template`/`back_template` become
+  `qfmt`/`afmt`, so a custom template (Phase 5.5's saved-template library
+  included) exports exactly as it previews. `export_apkg(items, template,
+  audio_path, deck_name, output_path, skip_incomplete=False)` slices each
+  item's clip out of the source audio with `soundfile` (`sf.read` with
+  frame-accurate `start`/`stop`, written back out as a per-item WAV into a
+  temp dir) and embeds it as a `genanki.Package` media file, referenced from
+  the template's "Audio" field as Anki's own `[sound:clip_0000.wav]` syntax
+  — everywhere else (item editor/template dialog previews) that field stays
+  the human-readable "🔊 0:00–0:02" placeholder, since those never touch a
+  real `.apkg`. `find_export_issues` flags any item missing text or a
+  cloze span; `export_apkg` raises `ExportBlockedError` (carrying the
+  offending items) unless the caller passes `skip_incomplete=True`, per
+  DESIGN.md §9's block-by-default/explicit-override rule — never a silent
+  partial export. Model/deck IDs are derived from a stable hash of the
+  template name / deck name (`_stable_id`, sha256-based) rather than
+  genanki's suggested `random.randrange`, so re-exporting the same
+  template/deck reuses the same Anki note type and deck on reimport
+  instead of spawning duplicates; note `guid`s are similarly derived from
+  the audio path + clip range so re-exporting the same item updates rather
+  than duplicates it in Anki. A multi-cloze item (Phase 5.5) exports
+  exactly as genanki/Anki interpret it natively — one card per distinct
+  `{{cN::...}}` — with no extra logic needed on this side.
+
+  The export flow itself (DESIGN.md §9) is a single dialog
+  (`flashcard_generator/ui/export_dialog.py`, opened via the toolbar's
+  "Export" action — now wired up instead of a disabled stub, enabled only
+  once at least one item exists, `Ctrl+E`): an "Anki Deck Name" field, an
+  output path chosen via `QFileDialog.getSaveFileName` (suggested location
+  `~/Downloads` when it exists), and a summary of item readiness. Items
+  missing text/cloze are listed by range and reason and block the Export
+  button until an explicit "Export anyway, skipping N incomplete items"
+  checkbox is ticked, matching §9's override wording exactly. On success
+  the dialog's content is replaced with the output path and a "Reveal in
+  File Manager" button (`QDesktopServices.openUrl` on the output
+  directory) plus Close, rather than just closing silently.
+- **Follow-up (post-implementation):** the deck name turned out to need
+  the same "in-app, one continuous session" treatment as the note template
+  rather than being a dialog-local field the user retypes on every
+  export — Anki's own `.apkg` import matches decks *by name*, so importing
+  into a pre-existing deck (rather than spawning a new one each time)
+  means the name has to be typed once and then stay put. `MainWindow`
+  gained `self._deck_name`, defaulted from the audio filename
+  (`export.default_deck_name`) on a fresh import and persisted alongside
+  `template`/`transcript_text` in `session.py`/`session.json` (a new
+  `deck_name` field, defaulting to `""` — i.e. "derive it from the audio
+  filename" — for session files written before this change).
+
+  The editable control itself lives directly on the main toolbar (an
+  "Anki Deck Name:" label + `QLineEdit`, disabled until audio is loaded,
+  positioned between "Note Template" and "Export" since it's export-facing
+  configuration), not inside the export dialog — a first pass put it in
+  the dialog with a `deck_name_changed` signal mirroring
+  `NoteTemplateDialog.template_changed`, but since `QDialog.exec()` is
+  modal, that would've blocked editing it at the exact moment (mid-export)
+  the user most wants to check/change it. The export dialog now just
+  displays the current value read-only, with a hint pointing back at the
+  toolbar field.
+- **Design deviation (made during implementation):** clip audio is
+  embedded as WAV rather than a compressed format — `soundfile`/libsndfile
+  can write MP3 in this environment, but that depends on the local
+  libsndfile build having LAME support, which isn't guaranteed on the
+  Windows target machine (OUTLINE §3); WAV needs no optional codec and Anki
+  plays it natively. Revisit if exported deck size becomes a real problem;
+  out of scope for this phase per OUTLINE §2.3's requirement (audio embedded
+  and playable), which doesn't mention size.
 
 ## Phase 7 — Session persistence ✅ *(done early, out of order)*
 - Pulled forward from its normal place in the build order: manually

@@ -201,6 +201,24 @@ def test_load_defaults_to_default_template_for_older_session_files(tmp_path):
     assert data.template.back_template == NoteTemplate().back_template
 
 
+def test_save_then_load_round_trips_deck_name(tmp_path):
+    session_path = tmp_path / "session.json"
+
+    save_session(session_path, "/audio.wav", ItemList(), deck_name="My Existing Deck")
+    data = load_session(session_path)
+
+    assert data.deck_name == "My Existing Deck"
+
+
+def test_load_defaults_to_empty_deck_name_for_older_session_files(tmp_path):
+    session_path = tmp_path / "session.json"
+    session_path.write_text('{"audio_path": "/a.wav", "items": []}', encoding="utf-8")
+
+    data = load_session(session_path)
+
+    assert data.deck_name == ""
+
+
 def test_save_overwrites_previous_contents(tmp_path):
     session_path = tmp_path / "session.json"
     items = ItemList()

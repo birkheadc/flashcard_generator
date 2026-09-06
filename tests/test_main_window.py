@@ -1563,3 +1563,117 @@ def test_transcript_text_survives_session_restore(qtbot, wav_file, session_path)
     assert restored._transcript_text == "Only section."
     assert restored._transcript_text_edit.toPlainText() == "Only section."
     assert restored._transcript_panel.isVisible()
+
+
+# -- export (Phase 6) ---------------------------------------------------------
+
+
+def test_deck_name_field_disabled_with_no_audio_loaded(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert not window._deck_name_edit.isEnabled()
+
+
+def test_deck_name_defaults_to_audio_filename_stem_on_import(qtbot, wav_file):
+    from pathlib import Path
+
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    assert window._deck_name == Path(path).stem
+    assert window._deck_name_edit.text() == Path(path).stem
+    assert window._deck_name_edit.isEnabled()
+
+
+def test_editing_toolbar_deck_name_persists_and_survives_restore(qtbot, wav_file, session_path):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._on_deck_name_edited("My Existing Deck")
+    assert window._deck_name == "My Existing Deck"
+
+    restored = MainWindow()
+    qtbot.addWidget(restored)
+    qtbot.waitUntil(lambda: restored._duration_ms > 0, timeout=3000)
+
+    assert restored._deck_name == "My Existing Deck"
+    assert restored._deck_name_edit.text() == "My Existing Deck"
+
+
+def test_export_action_disabled_with_no_items(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    assert not window._export_action.isEnabled()
+
+
+def test_export_action_enables_once_an_item_exists(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+
+    assert window._export_action.isEnabled()
+
+
+def test_export_action_disables_again_once_last_item_removed(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._on_remove_item_clicked()
+
+    assert not window._export_action.isEnabled()
+
+
+def test_open_export_dialog_passes_current_items_template_and_audio(qtbot, wav_file, monkeypatch):
+    from flashcard_generator.ui import main_window as main_window_module
+
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+
+    captured = {}
+
+    class FakeDialog:
+        def __init__(self, items, template, audio_path, deck_name, parent):
+            captured["items"] = items
+            captured["template"] = template
+            captured["audio_path"] = audio_path
+            captured["deck_name"] = deck_name
+
+        def exec(self):
+            captured["exec_called"] = True
+
+    monkeypatch.setattr(main_window_module, "ExportDialog", FakeDialog)
+
+    window._open_export_dialog()
+
+    assert captured["items"] is window._items
+    assert captured["template"] is window._template
+    assert captured["audio_path"] == window._audio_path
+    assert captured["deck_name"] == window._deck_name
+    assert captured["exec_called"] is True

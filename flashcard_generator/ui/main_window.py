@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
+from ..export import default_deck_name
 from ..items import ClozeSpan, Item, ItemList
 from ..session import default_session_path, load_session, save_session
 from ..template import NoteTemplate, cloze_index_count, cloze_wrapped_text, render_card
@@ -38,6 +40,7 @@ from ..template_library import default_template_library_path
 from ..transcript import normalize_transcript
 from . import theme
 from .format_time import format_time, format_time_ago
+from .export_dialog import ExportDialog
 from .icons import icon
 from .template_dialog import NoteTemplateDialog
 from .waveform_view import WaveformView
@@ -199,6 +202,7 @@ class MainWindow(QMainWindow):
         self._template = NoteTemplate()
         self._template_library_path = default_template_library_path()
         self._audio_path: str | None = None
+        self._deck_name = ""
         self._session_path = session_path if session_path is not None else default_session_path()
         self._pending_selection: tuple[float, float] | None = None
         self._loop_range: tuple[float, float] | None = None
@@ -677,10 +681,59 @@ class MainWindow(QMainWindow):
         self._template_action.triggered.connect(self._open_template_dialog)
         toolbar.addAction(self._template_action)
 
-        export_action = QAction(icon("mdi6.export-variant"), "Export", self)
-        export_action.setEnabled(False)
-        export_action.setToolTip(NOT_YET_IMPLEMENTED)
-        toolbar.addAction(export_action)
+        deck_name_container = QWidget(self)
+        deck_name_layout = QVBoxLayout(deck_name_container)
+        # Stacked (label above input) rather than side-by-side, to keep this
+        # narrow in the toolbar's one dimension that's actually scarce
+        # (horizontal) — unlike the panels below, the toolbar has plenty of
+        # vertical room to spare. No side margins here (unlike the buttons'
+        # own padding) — the toolbar's own inter-item `spacing` already
+        # provides the same gap it puts between every other pair of items,
+        # so adding more here would make this one item's margins uneven
+        # against its neighbors rather than matching them.
+        deck_name_layout.setContentsMargins(0, 0, 0, 0)
+        deck_name_layout.setSpacing(1)
+        deck_name_label = self._section_label("Anki Deck Name")
+        deck_name_layout.addWidget(deck_name_label)
+        self._deck_name_edit = QLineEdit(deck_name_container)
+        self._deck_name_edit.setPlaceholderText("Anki deck name")
+        self._deck_name_edit.setToolTip(
+            "Must exactly match an existing Anki deck's name to import into "
+            "it on export — otherwise Anki creates a new deck with this name."
+        )
+        self._deck_name_edit.setFixedWidth(180)
+        self._deck_name_edit.setEnabled(False)
+        self._deck_name_edit.textEdited.connect(self._on_deck_name_edited)
+
+        # A toolbar centers each item within the row's height, which is set
+        # by its tallest item. Left alone, this stacked label+input block is
+        # taller than a single-line button and — being the tallest item
+        # itself — ends up flush to the row's full height while the
+        # (shorter, centered) buttons get equal empty space above and below,
+        # so the input's bottom edge lands past the buttons' bottom edge
+        # rather than flush with it. Explicitly matching this container's
+        # height to a real toolbar button's (measured via sizeHint, same
+        # approach `_lock_toggle_button_width` uses for width) makes both
+        # items the same height, so the toolbar's own centering lines up
+        # their tops and bottoms identically with no further tweaking.
+        reference_button = toolbar.widgetForAction(self._template_action)
+        if reference_button is not None:
+            row_height = reference_button.sizeHint().height()
+            input_height = max(
+                row_height - deck_name_label.sizeHint().height() - deck_name_layout.spacing(),
+                18,
+            )
+            self._deck_name_edit.setFixedHeight(input_height)
+            deck_name_container.setFixedHeight(row_height)
+        deck_name_layout.addWidget(self._deck_name_edit)
+        toolbar.addWidget(deck_name_container)
+
+        self._export_action = QAction(icon("mdi6.export-variant"), "Export", self)
+        self._export_action.setShortcut("Ctrl+E")
+        self._export_action.setEnabled(False)
+        self._export_action.setToolTip("Add at least one item first")
+        self._export_action.triggered.connect(self._open_export_dialog)
+        toolbar.addAction(self._export_action)
 
         toolbar.addSeparator()
 
@@ -700,6 +753,7 @@ class MainWindow(QMainWindow):
         path: str,
         initial_items: list[Item] | None = None,
         initial_transcript_text: str = "",
+        initial_deck_name: str | None = None,
     ) -> None:
         if len(self._items) > 0 and not self._confirm_discard_items():
             return
@@ -734,6 +788,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Flashcard Generator — {Path(path).name}")
 
         self._audio_path = str(Path(path).resolve())
+        self._deck_name = (
+            initial_deck_name if initial_deck_name is not None else default_deck_name(path)
+        )
+        self._deck_name_edit.setEnabled(True)
+        self._deck_name_edit.setText(self._deck_name)
         self._save_session()
 
     def _restore_session(self) -> None:
@@ -742,7 +801,10 @@ class MainWindow(QMainWindow):
             return
         self._template = data.template
         self._load_audio_file(
-            data.audio_path, initial_items=data.items, initial_transcript_text=data.transcript_text
+            data.audio_path,
+            initial_items=data.items,
+            initial_transcript_text=data.transcript_text,
+            initial_deck_name=data.deck_name or default_deck_name(data.audio_path),
         )
 
     def _save_session(self) -> None:
@@ -754,6 +816,7 @@ class MainWindow(QMainWindow):
             self._items,
             self._transcript_text,
             self._template,
+            self._deck_name,
         )
         self._last_autosave_time = datetime.now()
         self._update_autosave_label()
@@ -1159,6 +1222,8 @@ class MainWindow(QMainWindow):
             parts.append(f"{needs_text} need text")
         self._items_ready_label.setText(" · ".join(parts))
         self._status_items_label.setText(label)
+        self._export_action.setEnabled(count > 0)
+        self._export_action.setToolTip("" if count > 0 else "Add at least one item first")
 
     def _update_item_regions(self) -> None:
         self._waveform.set_clip_regions(self._items.regions())
@@ -1411,6 +1476,20 @@ class MainWindow(QMainWindow):
         self._rebuild_extra_field_inputs()
         self._update_card_preview()
         self._save_session()
+
+    # -- export (Phase 6) ----------------------------------------------------
+
+    def _on_deck_name_edited(self, text: str) -> None:
+        self._deck_name = text
+        self._save_session()
+
+    def _open_export_dialog(self) -> None:
+        if len(self._items) == 0 or self._audio_path is None:
+            return
+        dialog = ExportDialog(
+            self._items, self._template, self._audio_path, self._deck_name, self
+        )
+        dialog.exec()
 
     # -- transcript (Phase 4) -----------------------------------------------
 
