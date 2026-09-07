@@ -5,6 +5,7 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libegl1 \
+    libglib2.0-0t64 \
     libxkbcommon0 \
     libxkbcommon-x11-0 \
     libxcb-cursor0 \
@@ -16,11 +17,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcb-shape0 \
     libxcb-xinerama0 \
     libxcb-xfixes0 \
+    libwayland-cursor0 \
+    libwayland-egl1 \
+    libxrandr2 \
     libdbus-1-3 \
     libfontconfig1 \
     libfreetype6 \
     libpulse0 \
+    libpipewire-0.3-0t64 \
+    libpipewire-0.3-common \
     fonts-dejavu-core \
+    fonts-noto-cjk \
     git \
     && rm -rf /var/lib/apt/lists/*
 

@@ -117,6 +117,38 @@ def test_incomplete_items_block_export_until_checkbox_checked(
     assert dialog._export_button.isEnabled()
 
 
+def test_initial_output_path_prefills_field_and_enables_export(qtbot, wav_file, tmp_path):
+    path = wav_file()
+    items = ItemList()
+    items.add(_ready_item())
+    out_path = str(tmp_path / "deck.apkg")
+
+    dialog = ExportDialog(
+        items, NoteTemplate(), path, default_deck_name(path), None, initial_output_path=out_path
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog._output_path_edit.text() == out_path
+    assert dialog._export_button.isEnabled()
+
+
+def test_successful_export_emits_exported_with_output_path(qtbot, wav_file, tmp_path, monkeypatch):
+    path = wav_file()
+    items = ItemList()
+    items.add(_ready_item())
+    out_path = tmp_path / "deck.apkg"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out_path), ""))
+
+    dialog = _make_dialog(items, path)
+    qtbot.addWidget(dialog)
+    dialog._on_browse_clicked()
+
+    with qtbot.waitSignal(dialog.exported, timeout=1000) as blocker:
+        dialog._on_export_clicked()
+
+    assert blocker.args == [str(out_path)]
+
+
 def test_successful_export_shows_reveal_and_close(qtbot, wav_file, tmp_path, monkeypatch):
     path = wav_file()
     items = ItemList()

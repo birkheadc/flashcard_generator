@@ -39,6 +39,7 @@ class SessionData:
     transcript_text: str
     template: NoteTemplate
     deck_name: str
+    last_export_path: str
 
 
 def save_session(
@@ -48,6 +49,7 @@ def save_session(
     transcript_text: str = "",
     template: NoteTemplate | None = None,
     deck_name: str = "",
+    last_export_path: str = "",
 ) -> None:
     """Best-effort autosave: failures are swallowed rather than surfaced,
     since this runs after nearly every edit and shouldn't interrupt work.
@@ -57,6 +59,7 @@ def save_session(
     data = {
         "audio_path": audio_path,
         "deck_name": deck_name,
+        "last_export_path": last_export_path,
         "items": [
             {
                 "start_seconds": item.clip.start_seconds,
@@ -113,6 +116,7 @@ def load_session(path: Path) -> SessionData | None:
             transcript_text=raw.get("transcript_text", ""),
             template=template,
             deck_name=raw.get("deck_name", ""),
+            last_export_path=raw.get("last_export_path", ""),
         )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None

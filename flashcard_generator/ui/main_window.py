@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
-from ..export import default_deck_name
+from ..export import ExportBlockedError, default_deck_name, export_apkg
 from ..items import ClozeSpan, Item, ItemList
 from ..session import default_session_path, load_session, save_session
 from ..template import NoteTemplate, cloze_index_count, cloze_wrapped_text, render_card
@@ -203,6 +203,7 @@ class MainWindow(QMainWindow):
         self._template_library_path = default_template_library_path()
         self._audio_path: str | None = None
         self._deck_name = ""
+        self._last_export_path: str | None = None
         self._session_path = session_path if session_path is not None else default_session_path()
         self._pending_selection: tuple[float, float] | None = None
         self._loop_range: tuple[float, float] | None = None
@@ -470,9 +471,11 @@ class MainWindow(QMainWindow):
         self._mark_cloze_button = QPushButton("Mark as Cloze")
         self._mark_cloze_button.setIcon(icon("mdi6.text-box-edit-outline"))
         self._mark_cloze_button.setEnabled(False)
+        self._mark_cloze_button.setShortcut("Ctrl+Shift+C")
         self._mark_cloze_button.setToolTip(
-            "Select a span of the text above first. A new span becomes the "
-            "next cloze (c1, c2, ...) — Anki turns each into its own card."
+            "Select a span of the text above first, then mark it as a cloze "
+            "(Ctrl+Shift+C). A new span becomes the next cloze (c1, c2, "
+            "...) — Anki turns each into its own card."
         )
         self._mark_cloze_button.clicked.connect(self._on_mark_cloze_clicked)
         cloze_row.addWidget(self._mark_cloze_button)
@@ -735,6 +738,13 @@ class MainWindow(QMainWindow):
         self._export_action.triggered.connect(self._open_export_dialog)
         toolbar.addAction(self._export_action)
 
+        self._quick_export_action = QAction(icon("mdi6.lightning-bolt-outline"), "Quick Export", self)
+        self._quick_export_action.setShortcut("Ctrl+Shift+E")
+        self._quick_export_action.setEnabled(False)
+        self._quick_export_action.setToolTip("Export once first to set an output file")
+        self._quick_export_action.triggered.connect(self._on_quick_export_clicked)
+        toolbar.addAction(self._quick_export_action)
+
         toolbar.addSeparator()
 
         preferences_action = QAction(icon("mdi6.cog-outline"), "Preferences", self)
@@ -754,6 +764,7 @@ class MainWindow(QMainWindow):
         initial_items: list[Item] | None = None,
         initial_transcript_text: str = "",
         initial_deck_name: str | None = None,
+        initial_last_export_path: str | None = None,
     ) -> None:
         if len(self._items) > 0 and not self._confirm_discard_items():
             return
@@ -793,6 +804,8 @@ class MainWindow(QMainWindow):
         )
         self._deck_name_edit.setEnabled(True)
         self._deck_name_edit.setText(self._deck_name)
+        self._last_export_path = initial_last_export_path
+        self._update_quick_export_enabled()
         self._save_session()
 
     def _restore_session(self) -> None:
@@ -805,6 +818,7 @@ class MainWindow(QMainWindow):
             initial_items=data.items,
             initial_transcript_text=data.transcript_text,
             initial_deck_name=data.deck_name or default_deck_name(data.audio_path),
+            initial_last_export_path=data.last_export_path or None,
         )
 
     def _save_session(self) -> None:
@@ -817,6 +831,7 @@ class MainWindow(QMainWindow):
             self._transcript_text,
             self._template,
             self._deck_name,
+            self._last_export_path or "",
         )
         self._last_autosave_time = datetime.now()
         self._update_autosave_label()
@@ -1224,6 +1239,7 @@ class MainWindow(QMainWindow):
         self._status_items_label.setText(label)
         self._export_action.setEnabled(count > 0)
         self._export_action.setToolTip("" if count > 0 else "Add at least one item first")
+        self._update_quick_export_enabled()
 
     def _update_item_regions(self) -> None:
         self._waveform.set_clip_regions(self._items.regions())
@@ -1241,7 +1257,18 @@ class MainWindow(QMainWindow):
                 cursor.selectionStart(), cursor.selectionEnd()
             )
         )
-        self._mark_cloze_button.setEnabled(index >= 0 and has_selection and not overlaps)
+        should_enable = index >= 0 and has_selection and not overlaps
+        # Marking a cloze (button click or the Ctrl+Shift+C shortcut) leaves
+        # the just-marked selection overlapping itself, so this button goes
+        # straight from focused to disabled in the same call chain. Qt
+        # responds to disabling a focused widget by handing focus to the
+        # next one in tab order — here, "Loop Preview" — which then drags
+        # the editor panel's scroll area down to keep that button visible,
+        # so the UI appears to jump away from the item you were just
+        # editing. Moving focus back to the text edit first heads that off.
+        if not should_enable and self._mark_cloze_button.hasFocus():
+            self._item_text_edit.setFocus()
+        self._mark_cloze_button.setEnabled(should_enable)
 
     def _on_mark_cloze_clicked(self) -> None:
         index = self._item_list_widget.currentRow()
@@ -1301,7 +1328,9 @@ class MainWindow(QMainWindow):
             self._cloze_hint_label.setVisible(True)
             return
         if not spans:
-            self._cloze_hint_label.setText("Select a span of the text above, then Mark as Cloze.")
+            self._cloze_hint_label.setText(
+                "Select a span of the text above, then Mark as Cloze (Ctrl+Shift+C)."
+            )
             self._cloze_hint_label.setVisible(True)
             return
         self._cloze_hint_label.setVisible(False)
@@ -1487,9 +1516,54 @@ class MainWindow(QMainWindow):
         if len(self._items) == 0 or self._audio_path is None:
             return
         dialog = ExportDialog(
-            self._items, self._template, self._audio_path, self._deck_name, self
+            self._items,
+            self._template,
+            self._audio_path,
+            self._deck_name,
+            self,
+            initial_output_path=self._last_export_path,
         )
+        dialog.exported.connect(self._on_exported)
         dialog.exec()
+
+    def _on_exported(self, output_path: str) -> None:
+        self._last_export_path = output_path
+        self._update_quick_export_enabled()
+        self._save_session()
+
+    def _update_quick_export_enabled(self) -> None:
+        can_quick_export = bool(self._last_export_path) and len(self._items) > 0
+        self._quick_export_action.setEnabled(can_quick_export)
+        self._quick_export_action.setToolTip(
+            f"Re-export to {self._last_export_path}"
+            if self._last_export_path
+            else "Export once first to set an output file"
+        )
+
+    def _on_quick_export_clicked(self) -> None:
+        if not self._last_export_path or len(self._items) == 0 or self._audio_path is None:
+            return
+        try:
+            export_apkg(
+                self._items,
+                self._template,
+                self._audio_path,
+                self._deck_name.strip(),
+                self._last_export_path,
+                skip_incomplete=False,
+            )
+        except ExportBlockedError as exc:
+            QMessageBox.warning(
+                self,
+                "Cannot quick-export",
+                f"{len(exc.issues)} item(s) are missing text or a cloze — "
+                "open Export to review and skip them, or fix them first.",
+            )
+            return
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self.statusBar().showMessage(f"Quick-exported to {self._last_export_path}", 5000)
 
     # -- transcript (Phase 4) -----------------------------------------------
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtGui import QAction, QInputMethodEvent, QTextCursor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QInputMethodEvent, QKeySequence, QTextCursor
 from PySide6.QtWidgets import QFileDialog, QLabel, QLineEdit, QMessageBox
 
 from flashcard_generator.clips import Clip
@@ -823,6 +824,38 @@ def test_mark_cloze_disabled_for_a_selection_overlapping_an_existing_cloze(qtbot
 
     _select_substring(window._item_text_edit, "world")
     assert not window._mark_cloze_button.isEnabled()
+
+
+def test_mark_cloze_button_has_keyboard_shortcut(qtbot, wav_file):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window._mark_cloze_button.shortcut() == QKeySequence("Ctrl+Shift+C")
+
+
+def test_marking_cloze_does_not_move_focus_to_loop_preview(qtbot, wav_file):
+    # Regression test: marking a cloze used to disable "Mark as Cloze"
+    # while it still held keyboard focus (the just-marked selection now
+    # overlaps itself), and Qt responds to disabling a focused widget by
+    # handing focus to the next widget in tab order — "Loop Preview" here
+    # — which then dragged the editor panel's scroll area down to it.
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._item_text_edit.setPlainText("hello world")
+    _select_substring(window._item_text_edit, "hello")
+
+    qtbot.mouseClick(window._mark_cloze_button, Qt.MouseButton.LeftButton)
+
+    assert not window._mark_cloze_button.isEnabled()
+    assert not window._preview_button.hasFocus()
+    assert window._item_text_edit.hasFocus()
 
 
 def test_removing_one_cloze_span_keeps_the_others(qtbot, wav_file):
@@ -1658,12 +1691,18 @@ def test_open_export_dialog_passes_current_items_template_and_audio(qtbot, wav_f
 
     captured = {}
 
+    class FakeSignal:
+        def connect(self, _slot):
+            pass
+
     class FakeDialog:
-        def __init__(self, items, template, audio_path, deck_name, parent):
+        def __init__(self, items, template, audio_path, deck_name, parent, initial_output_path=None):
             captured["items"] = items
             captured["template"] = template
             captured["audio_path"] = audio_path
             captured["deck_name"] = deck_name
+            captured["initial_output_path"] = initial_output_path
+            self.exported = FakeSignal()
 
         def exec(self):
             captured["exec_called"] = True
@@ -1676,4 +1715,123 @@ def test_open_export_dialog_passes_current_items_template_and_audio(qtbot, wav_f
     assert captured["template"] is window._template
     assert captured["audio_path"] == window._audio_path
     assert captured["deck_name"] == window._deck_name
+    assert captured["initial_output_path"] is None
     assert captured["exec_called"] is True
+
+
+def test_quick_export_disabled_until_first_export(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    assert not window._quick_export_action.isEnabled()
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+
+    # Adding a ready item isn't enough on its own — quick export needs a
+    # remembered output path, which only exists after a real export.
+    assert not window._quick_export_action.isEnabled()
+
+
+def test_on_exported_remembers_path_and_enables_quick_export(qtbot, wav_file, tmp_path):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+
+    out_path = str(tmp_path / "deck.apkg")
+    window._on_exported(out_path)
+
+    assert window._last_export_path == out_path
+    assert window._quick_export_action.isEnabled()
+
+    restored = load_session(window._session_path)
+    assert restored.last_export_path == out_path
+
+
+def test_reopening_export_dialog_reuses_last_export_path(qtbot, wav_file, monkeypatch):
+    from flashcard_generator.ui import main_window as main_window_module
+
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._last_export_path = "/exports/deck.apkg"
+
+    captured = {}
+
+    class FakeSignal:
+        def connect(self, _slot):
+            pass
+
+    class FakeDialog:
+        def __init__(self, items, template, audio_path, deck_name, parent, initial_output_path=None):
+            captured["initial_output_path"] = initial_output_path
+            self.exported = FakeSignal()
+
+        def exec(self):
+            pass
+
+    monkeypatch.setattr(main_window_module, "ExportDialog", FakeDialog)
+
+    window._open_export_dialog()
+
+    assert captured["initial_output_path"] == "/exports/deck.apkg"
+
+
+def test_quick_export_writes_to_last_export_path_without_a_dialog(qtbot, wav_file, tmp_path):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()
+    window._item_text_edit.setPlainText("hello world")
+    _select_substring(window._item_text_edit, "hello")
+    window._on_mark_cloze_clicked()
+
+    out_path = tmp_path / "deck.apkg"
+    window._last_export_path = str(out_path)
+
+    window._on_quick_export_clicked()
+
+    assert out_path.exists()
+
+
+def test_quick_export_warns_instead_of_writing_when_items_are_incomplete(
+    qtbot, wav_file, tmp_path, monkeypatch
+):
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: warnings.append(args)
+    )
+
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._waveform._waveform.set_selection(1.0, 2.0)
+    window._on_add_item_clicked()  # no text/cloze -> incomplete
+
+    out_path = tmp_path / "deck.apkg"
+    window._last_export_path = str(out_path)
+
+    window._on_quick_export_clicked()
+
+    assert not out_path.exists()
+    assert len(warnings) == 1

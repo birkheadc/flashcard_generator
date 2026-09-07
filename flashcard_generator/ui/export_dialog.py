@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -39,7 +39,15 @@ class ExportDialog(QDialog):
     and would otherwise block editing it right when the user needs to
     check/change it before exporting. This dialog only displays the
     current value for confirmation.
+
+    `initial_output_path`, when given, prefills the output path field with
+    the last path exported to (persisted by `MainWindow` in session.json)
+    so a repeat export doesn't require re-browsing to the same file —
+    `exported` is then emitted with whatever path a given export actually
+    used, so `MainWindow` can remember it for next time.
     """
+
+    exported = Signal(str)
 
     def __init__(
         self,
@@ -48,6 +56,7 @@ class ExportDialog(QDialog):
         audio_path: str,
         deck_name: str,
         parent: QWidget | None = None,
+        initial_output_path: str | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Export to Anki")
@@ -57,7 +66,7 @@ class ExportDialog(QDialog):
         self._audio_path = audio_path
         self._deck_name = deck_name
         self._issues = find_export_issues(items)
-        self._output_path: str | None = None
+        self._output_path: str | None = initial_output_path
 
         self._layout = QVBoxLayout(self)
         self._build_form()
@@ -87,6 +96,11 @@ class ExportDialog(QDialog):
         self._output_path_edit = QLineEdit(self)
         self._output_path_edit.setReadOnly(True)
         self._output_path_edit.setPlaceholderText("Choose where to save the .apkg…")
+        if self._output_path:
+            self._output_path_edit.setText(self._output_path)
+            self._output_path_edit.setToolTip(
+                "Reused from your last export — Browse… to change it."
+            )
         path_row.addWidget(self._output_path_edit, 1)
         browse_button = QPushButton("Browse…", self)
         browse_button.clicked.connect(self._on_browse_clicked)
@@ -193,6 +207,7 @@ class ExportDialog(QDialog):
             QMessageBox.critical(self, "Export failed", str(exc))
             return
 
+        self.exported.emit(self._output_path)
         self._show_success()
 
     def _show_success(self) -> None:
