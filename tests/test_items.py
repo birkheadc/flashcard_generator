@@ -3,7 +3,17 @@ from __future__ import annotations
 import pytest
 
 from flashcard_generator.clips import Clip
-from flashcard_generator.items import ClozeSpan, Item, ItemList
+from flashcard_generator.items import PROVENANCE_MANUAL, PROVENANCE_VAD, ClozeSpan, Item, ItemList
+
+
+def test_item_defaults_to_manual_provenance():
+    item = Item(clip=Clip(0.0, 1.0))
+    assert item.provenance == PROVENANCE_MANUAL
+
+
+def test_item_can_be_created_with_vad_provenance():
+    item = Item(clip=Clip(0.0, 1.0), provenance=PROVENANCE_VAD)
+    assert item.provenance == PROVENANCE_VAD
 
 
 def test_item_defaults_to_empty_text():

@@ -17,7 +17,7 @@ machine. Each phase is independently verifiable before moving to the next.
 
 Status: **Phase 3 done.** **Phase 7 pulled forward and done early** (see
 note below). **Phase 4 done.** **Phase 5 done.** **Phase 5.5 done.**
-**Phase 6 done.** Next up: **Phase 8** (GPU machine).
+**Phase 6 done.** **Phase 8 done.** Next up: **Phase 9** (GPU machine).
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
@@ -410,12 +410,86 @@ PySide6 app skeleton, `MainWindow` renders. Done.
 
 *— Everything above works with no ML dependency, on either machine. —*
 
-## Phase 8 — VAD-assisted snippets *(GPU machine)*
+## Phase 8 — VAD-assisted snippets *(GPU machine)* ✅
 - Integrate `silero-vad`; "Suggest snippets" action generates
   audio-only breakpoints/clips from the full recording.
 - Suggested clips flow into the same item list/curation as manual ones.
 - **Verify:** run on a real recording, confirm suggested breakpoints are
   reasonable and mix cleanly with manually-created items.
+
+> **GPU machine, in name only:** despite the roadmap heading, this phase
+> doesn't actually need CUDA — `silero-vad`'s model is a ~2MB JIT/ONNX
+> graph that runs in comfortably sub-real-time on CPU alone, and (checked
+> before depending on it) the PyPI package bundles its model weights
+> directly in the wheel rather than fetching them at runtime, satisfying
+> OUTLINE.md's "shipped once via installer" requirement with no network
+> access needed at inference time either. The CUDA requirement OUTLINE.md
+> and this roadmap heading actually mean belongs to Phase 9
+> (`faster-whisper`), not this one. Built and verified in a container with
+> no GPU exposed at all.
+
+- **Implemented:** `flashcard_generator/vad.py` wraps `silero-vad`
+  (`load_silero_vad()` / `get_speech_timestamps()`), lazily importing
+  `silero_vad`/`torch` only when a session actually clicks "Suggest Clips"
+  rather than at app startup, since that import is slow and otherwise
+  unused weight on every launch. Audio is read via `soundfile` (the same
+  library already used for waveform rendering and export) and downmixed/
+  resampled to the 16kHz rate Silero expects with plain `numpy.interp`,
+  rather than going through `torchaudio`'s own I/O/backend-dispatch path —
+  one less place needing a working system audio backend, and one fewer
+  thing to keep in sync with the app's existing audio-reading conventions.
+  `suggest_snippets(path)` returns a plain `list[Clip]`, using Silero's own
+  default thresholds/padding rather than exposing them as settings (no
+  phase calls for that yet).
+
+  `Item` gained a `provenance` field (`items.py`; `PROVENANCE_MANUAL`/
+  `PROVENANCE_VAD` constants) recording whether a clip was hand-placed or
+  VAD-suggested — a small additive change in the same spirit as
+  `cloze_spans`/`extra_fields` before it, since Phase 9's forced alignment
+  will need a third value here. Persisted in `session.py` with the usual
+  backward-compatible default (`manual`) for older session files; every
+  `Item(...)` reconstruction site in `main_window.py` (region edits, cloze
+  marks, extra-field edits, transcript-selection matches) was audited to
+  carry the original item's `provenance` forward rather than silently
+  resetting it to the default, mirroring the audit Phase 5.5 did for
+  `extra_fields`.
+
+  The toolbar's "Suggest Clips" stub (previously grouped with "Align
+  Transcript" under one disabled-stub loop) is now wired up for real via
+  `_on_suggest_clips_clicked`, enabled once audio is loaded (same pattern
+  as "Import Transcript"): runs `vad.suggest_snippets` synchronously under
+  a wait cursor and adds one `Item(provenance=PROVENANCE_VAD)` per detected
+  segment straight into the session's `ItemList`, so they sort/reorder/
+  delete/edit exactly like manual items with no separate code path. No
+  threading — consistent with `compute_waveform` already blocking the UI
+  thread on import, and fast enough in practice (a ~60s recording processes
+  in a couple of seconds even on CPU) that it wasn't worth being the app's
+  first background-worker infrastructure. A run that finds no speech shows
+  a status-bar message rather than silently doing nothing.
+
+- **Design deviation (scoped down from DESIGN.md §4/§6, deliberately):**
+  DESIGN.md describes amber waveform-region coloring with a dashed
+  "unconfirmed" fill that solidifies once a VAD clip has been reviewed, plus
+  multi-select and bulk-delete in the item deck for clearing a bad VAD
+  batch in one action. None of that is required by this phase's own verify
+  step (suggested clips just need to "mix cleanly" with manual ones, which
+  the existing single-select deck already does — an empty-text VAD item
+  already renders as "Not drafted" via the pre-existing status badge, with
+  no code change needed). Built instead: a small colored provenance dot on
+  each deck row's Range cell (`theme.PROVENANCE_COLORS`, reusing the
+  existing accent/grade tokens rather than introducing new ones), tooltipped
+  "Manually created"/"Suggested by VAD". Waveform region coloring, the
+  seen/reviewed fade, and multi-select bulk-delete are left for later if a
+  real VAD-heavy session finds the one-at-a-time deck delete too slow —
+  no reason to build them speculatively ahead of that.
+
+- **Verify (done):** run against `sample/kokoro/001_1.wav` (an existing
+  Japanese audiobook clip already checked into the repo) — confirmed
+  suggested clips land as normal deck rows with sensible timestamps,
+  distinguishable from manual items via the provenance dot, curated
+  (edited/deleted/reordered) identically to hand-placed ones, and persist
+  correctly across autosave/restore. Confirmed working end-to-end
+  interactively against a real recording.
 
 ## Phase 9 — Forced alignment *(GPU machine)*
 - Integrate `faster-whisper`; "Forced alignment" action takes the known

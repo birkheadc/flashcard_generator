@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from flashcard_generator.clips import Clip
-from flashcard_generator.items import ClozeSpan, Item, ItemList
+from flashcard_generator.items import PROVENANCE_MANUAL, PROVENANCE_VAD, ClozeSpan, Item, ItemList
 from flashcard_generator.session import default_session_path, load_session, save_session
 from flashcard_generator.template import NoteTemplate
 
@@ -237,6 +237,36 @@ def test_load_defaults_to_empty_last_export_path_for_older_session_files(tmp_pat
     data = load_session(session_path)
 
     assert data.last_export_path == ""
+
+
+# -- provenance (Phase 8) ----------------------------------------------
+
+
+def test_save_then_load_round_trips_provenance(tmp_path):
+    session_path = tmp_path / "session.json"
+    items = ItemList()
+    items.add(Item(clip=Clip(0.0, 1.0), text="typed by hand"))
+    items.add(Item(clip=Clip(1.0, 2.0), provenance=PROVENANCE_VAD))
+
+    save_session(session_path, "/audio.wav", items)
+    data = load_session(session_path)
+
+    assert data.items[0].provenance == PROVENANCE_MANUAL
+    assert data.items[1].provenance == PROVENANCE_VAD
+
+
+def test_load_defaults_to_manual_provenance_for_older_session_files(tmp_path):
+    session_path = tmp_path / "session.json"
+    session_path.write_text(
+        '{"audio_path": "/a.wav", "items": '
+        '[{"start_seconds": 0.0, "end_seconds": 1.0, "text": "hi"}]}',
+        encoding="utf-8",
+    )
+
+    data = load_session(session_path)
+
+    assert data is not None
+    assert data.items[0].provenance == PROVENANCE_MANUAL
 
 
 def test_save_overwrites_previous_contents(tmp_path):

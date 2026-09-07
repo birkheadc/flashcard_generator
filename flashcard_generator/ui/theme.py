@@ -80,6 +80,14 @@ ACCENT = ACTION_PRIMARY
 ACCENT_SOFT = CYPRUS_100
 ACCENT_BORDER = BORDER_FOCUS
 
+# Provenance dot colors (DESIGN.md §4/§6: manual/VAD/aligned), reusing the
+# existing accent/grade tokens rather than introducing new ones — aligned
+# (green) isn't wired up anywhere yet since it's Phase 9's, not Phase 8's.
+PROVENANCE_COLORS = {
+    "manual": ACTION_PRIMARY,
+    "vad": GRADE_HARD,
+}
+
 # -- tokens/typography.css -------------------------------------------------
 
 FONT_UI = '"Source Sans 3", "Segoe UI", system-ui, sans-serif'

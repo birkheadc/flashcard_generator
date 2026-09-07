@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .clips import Clip
-from .items import ClozeSpan, Item, ItemList
+from .items import PROVENANCE_MANUAL, ClozeSpan, Item, ItemList
 from .template import (
     DEFAULT_BACK_TEMPLATE,
     DEFAULT_FIELDS,
@@ -67,6 +67,7 @@ def save_session(
                 "text": item.text,
                 "cloze_spans": [[s.start, s.end] for s in item.cloze_spans],
                 "extra_fields": item.extra_fields,
+                "provenance": item.provenance,
             }
             for item in items
         ],
@@ -100,6 +101,7 @@ def load_session(path: Path) -> SessionData | None:
                 text=entry.get("text", ""),
                 cloze_spans=_load_cloze_spans(entry),
                 extra_fields=entry.get("extra_fields") or {},
+                provenance=entry.get("provenance") or PROVENANCE_MANUAL,
             )
             for entry in raw["items"]
         ]

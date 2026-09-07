@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QInputMethodEvent, QKeySequence, QTextCursor
 from PySide6.QtWidgets import QFileDialog, QLabel, QLineEdit, QMessageBox
 
 from flashcard_generator.clips import Clip
-from flashcard_generator.items import Item, ItemList
+from flashcard_generator.items import PROVENANCE_MANUAL, PROVENANCE_VAD, Item, ItemList
+
+REAL_SPEECH_SAMPLE = Path(__file__).parent.parent / "sample" / "kokoro" / "001_1.wav"
 from flashcard_generator.session import load_session, save_session
 from flashcard_generator.template import NoteTemplate
 from flashcard_generator.ui.main_window import (
@@ -90,6 +94,87 @@ def test_record_action_is_disabled_stub(qtbot):
     assert len(record_actions) == 1
     assert not record_actions[0].isEnabled()
     assert record_actions[0].toolTip() == "Not yet implemented"
+
+
+def test_align_transcript_action_is_disabled_stub(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    align_actions = [a for a in window.findChildren(QAction) if a.text() == "Align Transcript"]
+
+    assert len(align_actions) == 1
+    assert not align_actions[0].isEnabled()
+    assert align_actions[0].toolTip() == "Not yet implemented — see ROADMAP.md"
+
+
+# -- Suggest Clips / VAD (ROADMAP.md Phase 8) --------------------------------
+
+
+def test_suggest_clips_action_disabled_until_audio_loaded(qtbot, wav_file):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert not window._suggest_clips_action.isEnabled()
+
+    window._load_audio_file(wav_file(duration_seconds=1.0))
+
+    assert window._suggest_clips_action.isEnabled()
+
+
+def test_suggest_clips_adds_vad_items_from_a_real_recording(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(str(REAL_SPEECH_SAMPLE))
+
+    window._on_suggest_clips_clicked()
+    qtbot.waitUntil(lambda: len(window._items) > 0, timeout=5000)
+
+    assert all(item.provenance == PROVENANCE_VAD for item in window._items)
+    assert window._item_list_widget.rowCount() == len(window._items)
+
+
+def test_suggest_clips_deck_row_shows_vad_provenance_tooltip(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(str(REAL_SPEECH_SAMPLE))
+
+    window._on_suggest_clips_clicked()
+    qtbot.waitUntil(lambda: len(window._items) > 0, timeout=5000)
+
+    range_item = window._item_list_widget.item(0, RANGE_COLUMN)
+    assert range_item.toolTip() == "Suggested by VAD"
+
+
+def test_manually_added_item_keeps_manual_provenance(qtbot, wav_file):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(wav_file(duration_seconds=1.0))
+
+    window._items.add(Item(clip=Clip(0.0, 0.5)))
+    window._refresh_item_list_widget()
+
+    range_item = window._item_list_widget.item(0, RANGE_COLUMN)
+    assert range_item.toolTip() == "Manually created"
+    assert window._items[0].provenance == PROVENANCE_MANUAL
+
+
+def test_suggest_clips_persists_provenance_to_session_file(qtbot, session_path):
+    # Goes through load_session directly rather than a second MainWindow +
+    # _restore_session(): loading the same real audio file into a second
+    # QMediaPlayer while the first is still alive hangs under this sandbox's
+    # offscreen multimedia backend (unrelated to provenance/VAD logic —
+    # session-restore-from-real-audio is already exercised elsewhere with a
+    # synthetic wav_file, e.g. the Ctrl+E quick-export tests below).
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(str(REAL_SPEECH_SAMPLE))
+    window._on_suggest_clips_clicked()
+    qtbot.waitUntil(lambda: len(window._items) > 0, timeout=5000)
+    added_count = len(window._items)
+
+    data = load_session(session_path)
+
+    assert len(data.items) == added_count
+    assert all(item.provenance == PROVENANCE_VAD for item in data.items)
 
 
 def test_import_long_audio_warns_and_aborts_if_declined(qtbot, wav_file, monkeypatch):
@@ -212,6 +297,138 @@ def test_move_item_up_and_down_reorders(qtbot, wav_file):
 
     assert [i.clip.start_seconds for i in window._items] == [1.0, 3.0]
     assert window._item_list_widget.currentRow() == 1
+
+
+def test_editing_item_text_preserves_provenance(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(str(REAL_SPEECH_SAMPLE))
+    window._on_suggest_clips_clicked()
+    qtbot.waitUntil(lambda: len(window._items) > 0, timeout=5000)
+
+    window._item_list_widget.setCurrentRow(0)
+    window._item_text_edit.setPlainText("edited text")
+
+    assert window._items[0].text == "edited text"
+    assert window._items[0].provenance == PROVENANCE_VAD
+
+
+def test_combine_with_next_merges_range_text_and_extra_fields(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(
+        Item(
+            clip=Clip(1.0, 2.0),
+            text="first",
+            extra_fields={"Notes": "a"},
+            provenance=PROVENANCE_MANUAL,
+        )
+    )
+    window._items.add(
+        Item(
+            clip=Clip(3.0, 4.0),
+            text="second",
+            extra_fields={"Notes": "", "Extra": "b"},
+            provenance=PROVENANCE_VAD,
+        )
+    )
+    window._refresh_item_list_widget()
+
+    window._item_list_widget.setCurrentRow(0)
+    window._on_combine_with_next_clicked()
+
+    assert len(window._items) == 1
+    merged = window._items[0]
+    assert merged.clip.start_seconds == pytest.approx(1.0)
+    assert merged.clip.end_seconds == pytest.approx(4.0)
+    assert merged.text == "first second"
+    assert merged.extra_fields == {"Notes": "a", "Extra": "b"}
+    assert merged.provenance == PROVENANCE_MANUAL
+    assert window._item_list_widget.currentRow() == 0
+
+
+def test_combine_with_next_disabled_on_last_item(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._refresh_item_list_widget(select_index=0)
+
+    assert not window._combine_with_next_button.isEnabled()
+
+
+def test_clear_all_removes_every_item_when_confirmed(qtbot, wav_file, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+    )
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._items.add(Item(clip=Clip(3.0, 4.0)))
+    window._refresh_item_list_widget()
+    assert window._clear_all_button.isEnabled()
+
+    window._on_clear_all_clicked()
+
+    assert len(window._items) == 0
+    assert window._item_list_widget.rowCount() == 0
+    assert not window._clear_all_button.isEnabled()
+
+
+def test_clear_all_keeps_items_when_declined(qtbot, wav_file, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.No
+    )
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._refresh_item_list_widget()
+
+    window._on_clear_all_clicked()
+
+    assert len(window._items) == 1
+
+
+def test_suggest_clips_shows_busy_dialog_while_running(qtbot):
+    shown_titles = []
+    original = MainWindow._run_with_busy_dialog
+
+    def spy(self, title, message, func, on_done):
+        shown_titles.append(title)
+        return original(self, title, message, func, on_done)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(MainWindow, "_run_with_busy_dialog", spy)
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window._load_audio_file(str(REAL_SPEECH_SAMPLE))
+
+        window._on_suggest_clips_clicked()
+        # Waited out (rather than left pending) so the deferred QTimer this
+        # schedules doesn't fire against a torn-down window during a later,
+        # unrelated test.
+        qtbot.waitUntil(lambda: len(window._items) > 0, timeout=5000)
+
+    assert shown_titles == ["Suggest Clips"]
 
 
 def test_loop_preview_seeks_back_to_item_start_past_end(qtbot, wav_file):

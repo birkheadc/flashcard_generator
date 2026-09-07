@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from PySide6.QtGui import QAction, QColor, QTextCharFormat, QTextCursor
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -33,7 +36,7 @@ from PySide6.QtWidgets import (
 from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
 from ..export import ExportBlockedError, default_deck_name, export_apkg
-from ..items import ClozeSpan, Item, ItemList
+from ..items import PROVENANCE_MANUAL, PROVENANCE_VAD, ClozeSpan, Item, ItemList
 from ..session import default_session_path, load_session, save_session
 from ..template import NoteTemplate, cloze_index_count, cloze_wrapped_text, render_card
 from ..template_library import default_template_library_path
@@ -181,6 +184,10 @@ class ItemTableWidget(QTableWidget):
 
 
 class MainWindow(QMainWindow):
+    # _run_with_busy_dialog timing — see its docstring for why both exist.
+    _START_DELAY_MS = 60
+    _MIN_VISIBLE_MS = 400
+
     def __init__(self, session_path: Path | None = None):
         super().__init__()
         self.setWindowTitle("Flashcard Generator")
@@ -426,6 +433,12 @@ class MainWindow(QMainWindow):
         self._items_ready_label.setObjectName("metaLabel")
         footer_layout.addWidget(self._items_ready_label)
         footer_layout.addStretch()
+        self._clear_all_button = QPushButton("Clear All")
+        self._clear_all_button.setIcon(icon("mdi6.trash-can-outline", color=theme.ACTION_DANGER))
+        self._clear_all_button.setObjectName("dangerButton")
+        self._clear_all_button.setEnabled(False)
+        self._clear_all_button.clicked.connect(self._on_clear_all_clicked)
+        footer_layout.addWidget(self._clear_all_button)
         layout.addWidget(footer)
 
         return panel
@@ -534,6 +547,17 @@ class MainWindow(QMainWindow):
         self._move_down_button.clicked.connect(self._on_move_item_down)
         reorder_row.addWidget(self._move_down_button)
         body_layout.addLayout(reorder_row)
+
+        combine_row = QHBoxLayout()
+        self._combine_with_next_button = QPushButton("Combine with Next")
+        self._combine_with_next_button.setIcon(icon("mdi6.call-merge"))
+        self._combine_with_next_button.setToolTip(
+            "Merge this clip and the next one into a single item — useful "
+            "when Suggest Clips splits one sentence across two clips."
+        )
+        self._combine_with_next_button.clicked.connect(self._on_combine_with_next_clicked)
+        combine_row.addWidget(self._combine_with_next_button)
+        body_layout.addLayout(combine_row)
 
         body_layout.addStretch(1)
 
@@ -667,14 +691,16 @@ class MainWindow(QMainWindow):
         self._import_transcript_action.triggered.connect(self._import_transcript)
         toolbar.addAction(self._import_transcript_action)
 
-        for text, icon_name in (
-            ("Suggest Clips", "mdi6.auto-fix"),
-            ("Align Transcript", "mdi6.sync"),
-        ):
-            stub_action = QAction(icon(icon_name), text, self)
-            stub_action.setEnabled(False)
-            stub_action.setToolTip(NOT_YET_IMPLEMENTED)
-            toolbar.addAction(stub_action)
+        self._suggest_clips_action = QAction(icon("mdi6.auto-fix"), "Suggest Clips", self)
+        self._suggest_clips_action.setEnabled(False)
+        self._suggest_clips_action.setToolTip("Import an audio file first")
+        self._suggest_clips_action.triggered.connect(self._on_suggest_clips_clicked)
+        toolbar.addAction(self._suggest_clips_action)
+
+        align_action = QAction(icon("mdi6.sync"), "Align Transcript", self)
+        align_action.setEnabled(False)
+        align_action.setToolTip(NOT_YET_IMPLEMENTED)
+        toolbar.addAction(align_action)
 
         spacer = QWidget(self)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -796,6 +822,8 @@ class MainWindow(QMainWindow):
         self._play_button.setEnabled(True)
         self._import_transcript_action.setEnabled(True)
         self._import_transcript_action.setToolTip("")
+        self._suggest_clips_action.setEnabled(True)
+        self._suggest_clips_action.setToolTip("")
         self.setWindowTitle(f"Flashcard Generator — {Path(path).name}")
 
         self._audio_path = str(Path(path).resolve())
@@ -849,6 +877,94 @@ class MainWindow(QMainWindow):
             return
         self._set_transcript_text(normalize_transcript(raw_text))
         self._save_session()
+
+    def _run_with_busy_dialog(self, title: str, message: str, func, on_done) -> None:
+        """Show a modal, indeterminate progress popup, then run blocking
+        `func()` and hand its result (or raised exception) to
+        `on_done(result, exc)` — for long actions (Suggest Clips is the
+        first of these) where a wait cursor alone leaves the user with no
+        indication anything is happening.
+
+        Confirmed by hand on a real desktop session that a dialog shown
+        right before a blocking call can still flash and vanish too fast to
+        ever be perceived, even once `func` itself is deferred to let the
+        event loop paint it first: a fast-enough operation (e.g. `torch`
+        already warm from a prior Suggest Clips click, or just a fast
+        machine) can still finish inside the window between "compositor got
+        a paint request" and "compositor actually flips a frame." So two
+        delays, not one: `_START_DELAY_MS` before starting `func` at all
+        (time for the window manager to actually paint the just-shown
+        dialog), and `_MIN_VISIBLE_MS` the dialog is guaranteed to stay up
+        for afterward, regardless of how fast `func` finishes — so it can't
+        disappear before a human has had a chance to see it.
+        Not cancellable: nothing on the other end (yet) runs on a
+        background thread to actually interrupt.
+        """
+        dialog = QProgressDialog(message, "", 0, 0, self)
+        dialog.setWindowTitle(title)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setCancelButton(None)
+        dialog.setMinimumDuration(0)
+        dialog.show()
+        shown_at = time.monotonic()
+
+        def _finish(result, exc) -> None:
+            QApplication.restoreOverrideCursor()
+
+            def _close_and_report() -> None:
+                dialog.close()
+                on_done(result, exc)
+
+            elapsed_ms = (time.monotonic() - shown_at) * 1000
+            QTimer.singleShot(max(0, round(self._MIN_VISIBLE_MS - elapsed_ms)), _close_and_report)
+
+        def _run() -> None:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                result = func()
+            except Exception as exc:  # noqa: BLE001 - handed to on_done, not crashed on
+                _finish(None, exc)
+                return
+            _finish(result, None)
+
+        QTimer.singleShot(self._START_DELAY_MS, _run)
+
+    def _on_suggest_clips_clicked(self) -> None:
+        if self._audio_path is None:
+            return
+
+        def _detect() -> list[Clip]:
+            # Imported inside the busy dialog rather than at module load or
+            # even eagerly here — `vad` imports torch at module level, which
+            # is the actually-slow part (model loading is comparatively
+            # quick), and a session that never clicks this button shouldn't
+            # pay for it.
+            from .. import vad
+
+            return vad.suggest_snippets(self._audio_path)
+
+        self._run_with_busy_dialog(
+            "Suggest Clips",
+            "Detecting speech in the recording…",
+            _detect,
+            self._on_suggest_clips_done,
+        )
+
+    def _on_suggest_clips_done(self, clips: list[Clip] | None, exc: Exception | None) -> None:
+        if exc is not None:
+            QMessageBox.critical(self, "Suggest Clips failed", str(exc))
+            return
+
+        if not clips:
+            self.statusBar().showMessage("No speech detected.", 5000)
+            return
+        first_new_index = len(self._items)
+        for clip in clips:
+            self._items.add(Item(clip=clip, provenance=PROVENANCE_VAD))
+        self._refresh_item_list_widget(select_index=first_new_index)
+        self._update_item_regions()
+        self._save_session()
+        self.statusBar().showMessage(f"Added {len(clips)} suggested clip(s).", 5000)
 
     def _set_transcript_text(self, text: str) -> None:
         self._transcript_text = text
@@ -967,6 +1083,28 @@ class MainWindow(QMainWindow):
         self._update_item_regions()
         self._save_session()
 
+    def _on_clear_all_clicked(self) -> None:
+        count = len(self._items)
+        if count == 0:
+            return
+        plural = "" if count == 1 else "s"
+        choice = QMessageBox.warning(
+            self,
+            "Clear all clips?",
+            f"This will permanently discard all {count} item{plural} for the "
+            "current file.\n\nContinue anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        if self._loop_source == "item":
+            self._stop_loop()
+        self._items.clear()
+        self._refresh_item_list_widget()
+        self._update_item_regions()
+        self._save_session()
+
     def _on_move_item_up(self) -> None:
         index = self._item_list_widget.currentRow()
         if index <= 0:
@@ -989,6 +1127,39 @@ class MainWindow(QMainWindow):
         self._update_item_regions()
         self._save_session()
 
+    def _on_combine_with_next_clicked(self) -> None:
+        index = self._item_list_widget.currentRow()
+        if index < 0 or index >= len(self._items) - 1:
+            return
+        if self._loop_source == "item":
+            self._stop_loop()
+        first = self._items[index]
+        second = self._items[index + 1]
+        # min/max rather than assuming `second` starts after `first` — Move
+        # Up/Down let items be reordered out of chronological order, so
+        # list-adjacent items aren't guaranteed to be time-adjacent too.
+        merged_clip = Clip(
+            start_seconds=min(first.clip.start_seconds, second.clip.start_seconds),
+            end_seconds=max(first.clip.end_seconds, second.clip.end_seconds),
+        )
+        merged_text = " ".join(t for t in (first.text.strip(), second.text.strip()) if t)
+        # first's non-empty values win a key collision, since it's the item
+        # the user had selected when choosing to combine.
+        merged_extra_fields = {**second.extra_fields, **{k: v for k, v in first.extra_fields.items() if v}}
+        # cloze_spans are dropped: their offsets are into the old, separate
+        # texts and don't carry over into the merged text.
+        merged = Item(
+            clip=merged_clip,
+            text=merged_text,
+            extra_fields=merged_extra_fields,
+            provenance=first.provenance if first.provenance == second.provenance else PROVENANCE_MANUAL,
+        )
+        self._items.replace(index, merged)
+        self._items.remove(index + 1)
+        self._refresh_item_list_widget(select_index=index)
+        self._update_item_regions()
+        self._save_session()
+
     def _on_item_region_edited(self, index: int, start: float, end: float) -> None:
         old = self._items[index]
         new_clip = Clip(start_seconds=start, end_seconds=end)
@@ -999,6 +1170,7 @@ class MainWindow(QMainWindow):
                 text=old.text,
                 cloze_spans=old.cloze_spans,
                 extra_fields=old.extra_fields,
+                provenance=old.provenance,
             ),
         )
         if self._loop_source == "item" and self._loop_item_index == index:
@@ -1045,6 +1217,7 @@ class MainWindow(QMainWindow):
                 clip=old.clip,
                 text=self._item_text_edit.toPlainText(),
                 extra_fields=old.extra_fields,
+                provenance=old.provenance,
             ),
         )
         # Refresh just this row in place, rather than a full table rebuild,
@@ -1129,6 +1302,11 @@ class MainWindow(QMainWindow):
 
         range_item = QTableWidgetItem(range_text)
         range_item.setFlags(range_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        dot_color = theme.PROVENANCE_COLORS.get(item.provenance, theme.PROVENANCE_COLORS["manual"])
+        range_item.setIcon(icon("mdi6.circle", color=dot_color))
+        range_item.setToolTip(
+            "Suggested by VAD" if item.provenance == PROVENANCE_VAD else "Manually created"
+        )
         self._item_list_widget.setItem(row, RANGE_COLUMN, range_item)
 
         text_item = QTableWidgetItem(preview)
@@ -1219,7 +1397,9 @@ class MainWindow(QMainWindow):
         self._remove_item_button.setEnabled(has_selection)
         self._preview_button.setEnabled(has_selection)
         self._move_up_button.setEnabled(has_selection and index > 0)
-        self._move_down_button.setEnabled(has_selection and index < len(self._items) - 1)
+        can_combine = has_selection and index < len(self._items) - 1
+        self._move_down_button.setEnabled(can_combine)
+        self._combine_with_next_button.setEnabled(can_combine)
 
     def _update_items_meta(self) -> None:
         count = len(self._items)
@@ -1239,6 +1419,7 @@ class MainWindow(QMainWindow):
         self._status_items_label.setText(label)
         self._export_action.setEnabled(count > 0)
         self._export_action.setToolTip("" if count > 0 else "Add at least one item first")
+        self._clear_all_button.setEnabled(count > 0)
         self._update_quick_export_enabled()
 
     def _update_item_regions(self) -> None:
@@ -1282,7 +1463,13 @@ class MainWindow(QMainWindow):
         new_spans = [*old.cloze_spans, ClozeSpan(start=start, end=end)]
         self._items.replace(
             index,
-            Item(clip=old.clip, text=old.text, cloze_spans=new_spans, extra_fields=old.extra_fields),
+            Item(
+                clip=old.clip,
+                text=old.text,
+                cloze_spans=new_spans,
+                extra_fields=old.extra_fields,
+                provenance=old.provenance,
+            ),
         )
         self._populate_row(index, self._items[index])
         self._update_items_meta()
@@ -1297,7 +1484,11 @@ class MainWindow(QMainWindow):
         self._items.replace(
             index,
             Item(
-                clip=old.clip, text=old.text, cloze_spans=remaining, extra_fields=old.extra_fields
+                clip=old.clip,
+                text=old.text,
+                cloze_spans=remaining,
+                extra_fields=old.extra_fields,
+                provenance=old.provenance,
             ),
         )
         self._populate_row(index, self._items[index])
@@ -1432,6 +1623,7 @@ class MainWindow(QMainWindow):
                 text=old.text,
                 cloze_spans=old.cloze_spans,
                 extra_fields=new_extra_fields,
+                provenance=old.provenance,
             ),
         )
         self._update_card_preview()
@@ -1582,7 +1774,13 @@ class MainWindow(QMainWindow):
         selected_text = cursor.selectedText().replace(" ", "\n")
         old = self._items[item_index]
         self._items.replace(
-            item_index, Item(clip=old.clip, text=selected_text, extra_fields=old.extra_fields)
+            item_index,
+            Item(
+                clip=old.clip,
+                text=selected_text,
+                extra_fields=old.extra_fields,
+                provenance=old.provenance,
+            ),
         )
         self._populate_row(item_index, self._items[item_index])
         self._update_items_meta()

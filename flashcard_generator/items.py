@@ -4,6 +4,14 @@ from dataclasses import dataclass, field
 
 from .clips import Clip
 
+# Where an item's clip/breakpoints came from — drives the provenance dot in
+# the item deck (ROADMAP.md Phase 8) and, eventually, Phase 9's "aligned"
+# provenance. A plain str rather than an enum so it round-trips through
+# session.py's JSON with no extra (de)serialization step, same as every
+# other Item field.
+PROVENANCE_MANUAL = "manual"
+PROVENANCE_VAD = "vad"
+
 
 @dataclass
 class ClozeSpan:
@@ -39,6 +47,7 @@ class Item:
     text: str = ""
     cloze_spans: list[ClozeSpan] = field(default_factory=list)
     extra_fields: dict[str, str] = field(default_factory=dict)
+    provenance: str = PROVENANCE_MANUAL
 
     @property
     def has_cloze(self) -> bool:
