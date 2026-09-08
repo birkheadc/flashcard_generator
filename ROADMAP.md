@@ -17,7 +17,11 @@ machine. Each phase is independently verifiable before moving to the next.
 
 Status: **Phase 3 done.** **Phase 7 pulled forward and done early** (see
 note below). **Phase 4 done.** **Phase 5 done.** **Phase 5.5 done.**
-**Phase 6 done.** **Phase 8 done.** Next up: **Phase 9** (GPU machine).
+**Phase 6 done.** **Phase 8 done.** **Phase 9 skipped for now** (still
+requires the GPU machine; picked up again later). **Phase 10 implemented,
+pending Windows verification** (see below — building/running it can't
+happen from this Linux dev environment). Next up: **Phase 9** whenever the
+GPU machine is back in the loop, or **Phase 11** if that continues to wait.
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
@@ -500,10 +504,68 @@ PySide6 app skeleton, `MainWindow` renders. Done.
 - **Verify:** run against a sample audio+transcript pair, confirm
   timestamps and matched text are correct for both languages.
 
-## Phase 10 — Packaging
+## Phase 10 — Packaging *(implemented; verify on Windows)*
 - `PyInstaller` build → single executable.
 - **Verify:** run the built executable on the Windows target machine
   (the primary platform per §3), confirm no missing runtime deps.
+
+> **Scope grew slightly during implementation:** the roadmap line above
+> only calls for a PyInstaller executable, but "build an installer for
+> Windows" was the actual ask — a bare `.exe` folder isn't something a
+> non-technical end user installs/uninstalls cleanly. Added an Inno Setup
+> layer on top of the PyInstaller output, producing one `Setup.exe` a user
+> runs (Start Menu shortcut, optional desktop shortcut, proper uninstall
+> entry in Apps & Features) — still satisfying "single executable" from the
+> distribution side, just not literally the only file PyInstaller emits.
+
+- **Implemented:** `packaging/flashcard_generator.spec` (PyInstaller) builds
+  a **onedir** app (`COLLECT`, not `--onefile`) — `silero-vad` pulls in
+  `torch`, and a onefile build would re-extract torch's DLLs into a temp
+  dir on every launch, slow enough to feel broken on first impression;
+  onedir avoids that at the cost of the installer being the thing that
+  hides "it's actually a folder" from the user rather than PyInstaller
+  itself. `qtawesome` (icon fonts) and `silero_vad` (VAD model weights)
+  both ship real files as package data with no importable reference
+  PyInstaller's static analysis can follow, so both are pulled in
+  explicitly via `PyInstaller.utils.hooks.collect_data_files` — confirmed
+  those calls actually resolve non-empty file lists (24 qtawesome files, 6
+  silero_vad files) since a spec that silently collected zero files would
+  only surface as a runtime crash the first time a packaged build opens a
+  dialog with an icon or clicks "Suggest Clips". `packaging/installer.iss`
+  (Inno Setup 6) wraps the PyInstaller `dist/FlashcardGenerator/` output
+  into `FlashcardGeneratorSetup.exe`; `packaging/build_windows.ps1` chains
+  both steps (PyInstaller, then Inno Setup if `ISCC.exe` is found).
+  `pyproject.toml` gained a `packaging` dependency group
+  (`pyinstaller`, `pyinstaller-hooks-contrib` — the latter for its
+  community-maintained `torch` hook, since torch's DLL/import surface is
+  large enough that PyInstaller's own built-in hooks aren't always
+  sufficient). `.gitignore`'s blanket `*.spec` rule (aimed at
+  PyInstaller's own auto-generated specs from ad-hoc `pyinstaller foo.py`
+  runs) gained a `!/packaging/*.spec` carve-out so this hand-written one
+  stays tracked.
+
+  UPX compression is left off in the spec — it shrinks torch's large DLLs
+  but has a history of triggering Windows Defender/AV false positives on
+  PyInstaller output specifically, which isn't a tradeoff worth making by
+  default for a personal-use tool.
+
+- **Deliberately not verified as "done" here:** PyInstaller doesn't
+  cross-compile — a Windows `.exe` can only be produced by running the
+  build on Windows, so none of this could be built or run inside this
+  repo's Linux dev container. What *was* checked here: the two
+  `collect_data_files` calls resolve real files (above), and
+  `uv sync --group packaging` installs cleanly. The actual build, the
+  installer, and this phase's own verify step (run on the Windows target
+  machine, confirm no missing runtime deps) all still need to happen on
+  Windows — see `packaging/README.md` for the exact commands and a
+  slightly expanded verify checklist (icon rendering and "Suggest Clips"
+  specifically, since those are the two things depending on the
+  hand-collected data files above, not just "does it launch").
+- **No app icon yet:** nothing in `design_reference/` or elsewhere in the
+  repo is an `.ico`, so the spec passes `icon=None` and Inno Setup's
+  shortcuts fall back to the exe's own (PyInstaller default) icon. Add one
+  later by pointing the spec's `icon=` at a real `.ico` file — noted in
+  `packaging/README.md` rather than inventing placeholder branding here.
 
 ## Phase 11 — In-app recording *(deferred, no ETA)*
 - Replace the Phase 1 stub with real WASAPI loopback capture
