@@ -25,7 +25,7 @@ datas += collect_data_files("qtawesome")
 datas += collect_data_files("silero_vad")
 
 a = Analysis(
-    [os.path.join(PROJECT_ROOT, "flashcard_generator", "main.py")],
+    [os.path.join(PROJECT_ROOT, "packaging", "pyinstaller_entry.py")],
     pathex=[PROJECT_ROOT],
     binaries=[],
     datas=datas,
