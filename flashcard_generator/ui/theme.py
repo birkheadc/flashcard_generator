@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 from PySide6.QtWidgets import QApplication
 
 """Shared visual language for the app, transcribed from the design tokens in
@@ -147,6 +147,45 @@ def ensure_fonts_loaded() -> None:
 
     _fonts_loaded = True
 
+
+def apply_app_theme(app: QApplication) -> None:
+    """Force Qt's own "Fusion" style and a fixed light QPalette, rather than
+    whatever native style/palette the platform would otherwise pick.
+
+    Without this, a native style (e.g. Windows' "windowsvista"/"windows11")
+    partly paints controls like QLineEdit from the OS theme rather than this
+    app's QSS — on a machine with Windows set to a dark app theme, that left
+    the "Anki Deck Name" field (and other plain QLineEdit/QCheckBox text)
+    rendering with the OS's light-on-dark text color against this app's own
+    light background: text effectively invisible until focused. Fusion
+    always paints from the QPalette Qt is given, ignoring the OS theme, so
+    pairing it with an explicit light palette here makes the app look the
+    same regardless of the user's Windows theme.
+    """
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(SURFACE_APP))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(TEXT_BODY))
+    palette.setColor(QPalette.ColorRole.Base, QColor(SURFACE_CARD))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(SURFACE_SUNKEN))
+    palette.setColor(QPalette.ColorRole.Text, QColor(TEXT_BODY))
+    palette.setColor(QPalette.ColorRole.Button, QColor(SURFACE_CARD))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(TEXT_BODY))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(SURFACE_CARD))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(TEXT_BODY))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(TEXT_SUBTLE))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(ACTION_PRIMARY))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(PAPER_0))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(TEXT_DISABLED))
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor(TEXT_DISABLED)
+    )
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(TEXT_DISABLED)
+    )
+    app.setPalette(palette)
+
+
 TEXT_MICRO = 10
 TEXT_META = 11
 TEXT_UI = 13
@@ -237,18 +276,41 @@ QWidget#scrollBody {{
     background: transparent;
 }}
 
+QFrame#deckNameBar {{
+    background: {CYPRUS_050};
+    border: {BORDER_WIDTH}px solid {CYPRUS_100};
+    border-radius: {RADIUS_3}px;
+}}
+
+QLabel#deckNameBarLabel {{
+    color: {TEXT_TITLE};
+    font-size: {TEXT_UI_LG}px;
+    font-weight: {WEIGHT_SEMIBOLD};
+}}
+
+QFrame#deckNameBar QLineEdit {{
+    font-size: {TEXT_UI_LG}px;
+    padding: {SPACE_3}px {SPACE_5}px;
+}}
+
 QToolBar#mainToolbar {{
     background: {PAPER_1};
     border-bottom: {BORDER_WIDTH}px solid {BORDER_HAIRLINE};
-    padding: {SPACE_2}px {SPACE_4}px;
-    spacing: {SPACE_2}px;
+    padding: {SPACE_3}px {SPACE_5}px;
+    spacing: {SPACE_4}px;
+}}
+
+QToolBar#mainToolbar::separator {{
+    background: {BORDER_HAIRLINE};
+    width: {BORDER_WIDTH}px;
+    margin: {SPACE_3}px {SPACE_3}px;
 }}
 
 QToolBar#mainToolbar QToolButton {{
     background: {PAPER_0};
     border: {BORDER_WIDTH}px solid {BORDER_HAIRLINE};
     border-radius: {RADIUS_2}px;
-    padding: {SPACE_2}px {SPACE_4}px;
+    padding: {SPACE_2}px {SPACE_5}px;
     color: {TEXT_BODY};
     min-height: {CONTROL_HEIGHT}px;
 }}
@@ -422,6 +484,45 @@ QPlainTextEdit:focus {{
 QPlainTextEdit:disabled {{
     background: {PAPER_2};
     color: {TEXT_DISABLED};
+}}
+
+QPlainTextEdit#transcriptTextEdit {{
+    border: none;
+    border-radius: 0;
+}}
+
+QLineEdit {{
+    background: {PAPER_0};
+    border: {BORDER_WIDTH}px solid {BORDER_FIELD};
+    border-radius: {RADIUS_3}px;
+    padding: {SPACE_2}px {SPACE_5}px;
+    color: {TEXT_BODY};
+    selection-background-color: {ACTION_PRIMARY};
+    selection-color: {PAPER_0};
+}}
+
+QLineEdit:focus {{
+    border-color: {BORDER_FOCUS};
+}}
+
+QLineEdit:disabled {{
+    background: {PAPER_2};
+    color: {TEXT_DISABLED};
+}}
+
+QCheckBox {{
+    color: {TEXT_BODY};
+    spacing: {SPACE_3}px;
+}}
+
+QCheckBox:disabled {{
+    color: {TEXT_DISABLED};
+}}
+
+QStatusBar#mainStatusBar QLabel {{
+    color: {TEXT_SUBTLE};
+    font-family: {FONT_MONO};
+    font-size: {TEXT_META}px;
 }}
 
 QLabel#cardPreviewFace {{

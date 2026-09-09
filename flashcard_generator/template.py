@@ -9,8 +9,8 @@ from typing import Iterable
 # onto Model fields, front/back templates map onto qfmt/afmt.
 DEFAULT_TEMPLATE_NAME = "Default"
 DEFAULT_FIELDS = ["Text", "Audio"]
-DEFAULT_FRONT_TEMPLATE = "{{cloze:Text}}"
-DEFAULT_BACK_TEMPLATE = "{{cloze:Text}}<br>{{Audio}}"
+DEFAULT_FRONT_TEMPLATE = '<div style="text-align: center;">{{Audio}}<br>{{cloze:Text}}</div>'
+DEFAULT_BACK_TEMPLATE = '<div style="text-align: center;">{{Audio}}<br>{{cloze:Text}}</div>'
 
 _CLOZE_FIELD_RE = re.compile(r"\{\{cloze:(\w+)\}\}")
 _FIELD_RE = re.compile(r"\{\{(\w+)\}\}")

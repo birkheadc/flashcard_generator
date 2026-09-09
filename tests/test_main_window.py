@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QInputMethodEvent, QKeySequence, QTextCursor
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QFileDialog, QLabel, QLineEdit, QMessageBox
 
+from flashcard_generator import __version__
 from flashcard_generator.clips import Clip
 from flashcard_generator.items import PROVENANCE_MANUAL, PROVENANCE_VAD, Item, ItemList
 
@@ -14,6 +16,7 @@ REAL_SPEECH_SAMPLE = Path(__file__).parent.parent / "sample" / "kokoro" / "001_1
 from flashcard_generator.session import load_session, save_session
 from flashcard_generator.template import NoteTemplate
 from flashcard_generator.ui.main_window import (
+    CHECK_COLUMN,
     RANGE_COLUMN,
     STATE_COLUMN,
     TEXT_COLUMN,
@@ -44,6 +47,89 @@ def _sample_data_input(dialog, field_name: str) -> QLineEdit:
     raise AssertionError(f"no sample-data input for field {field_name!r}")
 
 
+def test_toolbar_starts_wide_enough_to_show_full_text_labels(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window._toolbar.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+    assert window.width() >= window._toolbar_text_width
+
+
+def test_narrowing_the_window_switches_the_toolbar_to_icon_only(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    midpoint = (window._toolbar_icon_only_width + window._toolbar_text_width) // 2
+    window.resize(midpoint, window.height())
+
+    assert window._toolbar.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
+
+    window.resize(window._toolbar_text_width + 100, window.height())
+
+    assert window._toolbar.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+
+
+def test_window_cannot_shrink_narrower_than_icon_only_toolbar(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    window.resize(window._toolbar_icon_only_width - 200, window.height())
+
+    assert window.width() >= window._toolbar_icon_only_width
+
+
+def test_window_title_includes_the_app_version(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert __version__ in window.windowTitle()
+
+
+def test_preferences_action_is_enabled_and_opens_the_dialog(qtbot, monkeypatch):
+    from flashcard_generator.ui import main_window as main_window_module
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    preferences_action = next(
+        a for a in window.findChildren(QAction) if a.text() == "Preferences"
+    )
+    assert preferences_action.isEnabled()
+
+    opened = []
+    monkeypatch.setattr(
+        main_window_module.PreferencesDialog, "exec", lambda self: opened.append(True)
+    )
+    preferences_action.trigger()
+
+    assert opened == [True]
+
+
+def test_reset_all_deletes_session_and_template_files_then_relaunches(
+    qtbot, session_path, template_library_path, monkeypatch
+):
+    from flashcard_generator.ui import main_window as main_window_module
+
+    session_path.write_text("{}", encoding="utf-8")
+    template_library_path.write_text("{}", encoding="utf-8")
+
+    exec_calls = []
+    monkeypatch.setattr(main_window_module.os, "execv", lambda *args: exec_calls.append(args))
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._template_library_path = template_library_path
+
+    window._on_reset_all_confirmed()
+
+    assert not session_path.exists()
+    assert not template_library_path.exists()
+    assert len(exec_calls) == 1
+
+
 def test_import_loads_audio_and_enables_playback(qtbot, wav_file):
     path = wav_file(duration_seconds=1.0)
 
@@ -56,7 +142,7 @@ def test_import_loads_audio_and_enables_playback(qtbot, wav_file):
     assert window._duration_ms == pytest.approx(1000, abs=50)
 
 
-def test_play_pause_toggles_button_label(qtbot, wav_file):
+def test_play_pause_toggles_button_tooltip(qtbot, wav_file):
     path = wav_file(duration_seconds=1.0)
 
     window = MainWindow()
@@ -65,10 +151,10 @@ def test_play_pause_toggles_button_label(qtbot, wav_file):
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
     window._toggle_playback()
-    qtbot.waitUntil(lambda: window._play_button.text() == "Pause", timeout=3000)
+    qtbot.waitUntil(lambda: window._play_button.toolTip() == "Pause", timeout=3000)
 
     window._toggle_playback()
-    qtbot.waitUntil(lambda: window._play_button.text() == "Play", timeout=3000)
+    qtbot.waitUntil(lambda: window._play_button.toolTip() == "Play", timeout=3000)
 
 
 def test_seek_moves_player_position(qtbot, wav_file):
@@ -408,6 +494,102 @@ def test_clear_all_keeps_items_when_declined(qtbot, wav_file, monkeypatch):
     assert len(window._items) == 1
 
 
+def test_checking_keep_box_enables_discard_unchecked_button(qtbot, wav_file):
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(Item(clip=Clip(0.0, 1.0)))
+    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._items.add(Item(clip=Clip(2.0, 3.0)))
+    window._refresh_item_list_widget()
+
+    assert not window._discard_unchecked_button.isEnabled()
+
+    window._item_list_widget.item(0, CHECK_COLUMN).setCheckState(Qt.CheckState.Checked)
+
+    assert window._discard_unchecked_button.isEnabled()
+    assert "2" in window._discard_unchecked_button.text()
+
+    # Checking every row leaves nothing to discard.
+    window._item_list_widget.item(1, CHECK_COLUMN).setCheckState(Qt.CheckState.Checked)
+    window._item_list_widget.item(2, CHECK_COLUMN).setCheckState(Qt.CheckState.Checked)
+
+    assert not window._discard_unchecked_button.isEnabled()
+
+
+def test_discard_unchecked_keeps_checked_items_and_clears_checks(qtbot, wav_file, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+    )
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(Item(clip=Clip(0.0, 1.0)))
+    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._items.add(Item(clip=Clip(2.0, 3.0)))
+    window._refresh_item_list_widget()
+
+    window._item_list_widget.item(1, CHECK_COLUMN).setCheckState(Qt.CheckState.Checked)
+
+    window._on_discard_unchecked_clicked()
+
+    assert len(window._items) == 1
+    assert window._items[0].clip.start_seconds == pytest.approx(1.0)
+    assert not window._checked_item_ids
+    assert not window._discard_unchecked_button.isEnabled()
+
+
+def test_discard_unchecked_declined_keeps_all_items(qtbot, wav_file, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.No
+    )
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(Item(clip=Clip(0.0, 1.0)))
+    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._refresh_item_list_widget()
+    window._item_list_widget.item(0, CHECK_COLUMN).setCheckState(Qt.CheckState.Checked)
+
+    window._on_discard_unchecked_clicked()
+
+    assert len(window._items) == 2
+
+
+def test_removing_an_item_does_not_leak_its_checked_state_onto_a_new_item(qtbot, wav_file):
+    # Checked-ness is tracked by id(item) rather than row index, so it must
+    # be dropped once the underlying item is gone — otherwise a later item
+    # object could (in principle, via id() reuse) inherit a stale check.
+    path = wav_file(duration_seconds=10.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(Item(clip=Clip(0.0, 1.0)))
+    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._refresh_item_list_widget()
+    window._item_list_widget.item(0, CHECK_COLUMN).setCheckState(Qt.CheckState.Checked)
+
+    window._item_list_widget.setCurrentRow(0)
+    window._on_remove_item_clicked()
+
+    window._items.add(Item(clip=Clip(5.0, 6.0)))
+    window._refresh_item_list_widget()
+
+    new_row = len(window._items) - 1
+    assert window._item_list_widget.item(new_row, CHECK_COLUMN).checkState() == Qt.CheckState.Unchecked
+
+
 def test_suggest_clips_shows_busy_dialog_while_running(qtbot):
     shown_titles = []
     original = MainWindow._run_with_busy_dialog
@@ -471,7 +653,7 @@ def test_play_selection_loop_seeks_back_to_selection_start_past_end(qtbot, wav_f
     assert window._play_selection_button.isEnabled()
 
     window._on_play_selection_clicked()
-    assert window._play_selection_button.text() == "Stop"
+    assert window._play_selection_button.toolTip() == "Stop"
     qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
 
     window._on_position_changed(2500)  # past the selection's 2.0s end
@@ -479,9 +661,35 @@ def test_play_selection_loop_seeks_back_to_selection_start_past_end(qtbot, wav_f
     assert window._player.position() == pytest.approx(1000, abs=50)
 
     window._on_play_selection_clicked()
-    assert window._play_selection_button.text() == "Play Selection (Loop)"
+    assert window._play_selection_button.toolTip() == "Play Selection (Loop)"
     assert window._loop_range is None
     assert window._loop_source is None
+
+
+def test_row_play_stops_at_clip_end_instead_of_looping(qtbot, wav_file):
+    # The clip deck's row Play is a quick, single listen-through while
+    # scanning many rows — unlike the item editor's "Loop Preview", it
+    # should not loop back to the clip's start once it reaches the end.
+    path = wav_file(duration_seconds=10.0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
+
+    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._refresh_item_list_widget()
+
+    window._on_row_play_clicked(0)
+    assert window._loop_source == "row"
+    assert not window._loop_repeats
+    qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
+
+    window._on_position_changed(2500)  # past the clip's 2.0s end
+
+    assert window._loop_range is None
+    assert window._loop_source is None
+    assert window._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState
 
 
 def test_clearing_selection_stops_selection_loop(qtbot, wav_file):
@@ -499,7 +707,7 @@ def test_clearing_selection_stops_selection_loop(qtbot, wav_file):
     window._waveform.clear_selection()
 
     assert window._loop_source is None
-    assert window._play_selection_button.text() == "Play Selection (Loop)"
+    assert window._play_selection_button.toolTip() == "Play Selection (Loop)"
 
 
 def test_manual_seek_stops_active_loop(qtbot, wav_file):
@@ -517,7 +725,7 @@ def test_manual_seek_stops_active_loop(qtbot, wav_file):
     window._seek_to_seconds(5.0)
 
     assert window._loop_source is None
-    assert window._play_selection_button.text() == "Play Selection (Loop)"
+    assert window._play_selection_button.toolTip() == "Play Selection (Loop)"
 
 
 def test_dragging_item_edge_on_waveform_updates_the_item(qtbot, wav_file):
@@ -900,6 +1108,22 @@ def test_import_transcript_populates_pane_and_reveals_it(qtbot, wav_file, tmp_pa
     assert window._transcript_text == "First section.\n\nSecond section."
 
 
+def test_transcript_is_editable_and_edits_are_saved(qtbot, wav_file, session_path):
+    path = wav_file(duration_seconds=5.0)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+    window._set_transcript_text("Original text.")
+
+    assert not window._transcript_text_edit.isReadOnly()
+
+    window._transcript_text_edit.setPlainText("Corrected text.")
+
+    assert window._transcript_text == "Corrected text."
+    restored = load_session(session_path)
+    assert restored.transcript_text == "Corrected text."
+
+
 def test_using_a_transcript_selection_sets_the_selected_items_text(qtbot, wav_file):
     path = wav_file(duration_seconds=10.0)
     window = MainWindow()
@@ -1196,7 +1420,7 @@ def test_card_preview_reflects_selected_item_and_cloze(qtbot, wav_file):
     _select_substring(window._item_text_edit, "サンプル")
     window._on_mark_cloze_clicked()
 
-    assert window._preview_front_label.text() == "これは[...]です"
+    assert "これは[...]です" in window._preview_front_label.text()
     assert "サンプル" in window._preview_back_label.text()
     assert not window._multi_cloze_hint_label.isVisible()
 
@@ -1221,8 +1445,8 @@ def test_card_preview_shows_only_the_first_cloze_with_multiple_marked(qtbot, wav
     _select_substring(window._item_text_edit, "three")
     window._on_mark_cloze_clicked()
 
-    assert window._preview_front_label.text() == "[...] two three"
-    assert window._preview_back_label.text().startswith("one two three")
+    assert "[...] two three" in window._preview_front_label.text()
+    assert "one two three" in window._preview_back_label.text()
     assert window._multi_cloze_hint_label.isVisible()
     assert "2 cards" in window._multi_cloze_hint_label.text()
     assert "card 1" in window._multi_cloze_hint_label.text()
@@ -2024,7 +2248,11 @@ def test_quick_export_writes_to_last_export_path_without_a_dialog(qtbot, wav_fil
     window._last_export_path = str(out_path)
 
     window._on_quick_export_clicked()
-
+    # Wait for the whole busy-dialog round trip (not just the file appearing
+    # partway through _do_export) to finish, so its guaranteed-min-visible
+    # close timer doesn't fire after this test's window/dialog are already
+    # torn down.
+    qtbot.waitUntil(lambda: window.statusBar().currentMessage() != "", timeout=3000)
     assert out_path.exists()
 
 
@@ -2049,6 +2277,6 @@ def test_quick_export_warns_instead_of_writing_when_items_are_incomplete(
     window._last_export_path = str(out_path)
 
     window._on_quick_export_clicked()
+    qtbot.waitUntil(lambda: len(warnings) == 1, timeout=3000)
 
     assert not out_path.exists()
-    assert len(warnings) == 1

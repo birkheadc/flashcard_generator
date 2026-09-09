@@ -49,6 +49,26 @@ def test_remove_deletes_by_index():
     assert items[0].clip.start_seconds == 1.0
 
 
+def test_remove_many_drops_given_indices_and_keeps_the_rest_in_order():
+    items = ItemList()
+    for i in range(5):
+        items.add(Item(clip=Clip(float(i), float(i) + 1.0)))
+
+    items.remove_many([1, 3])
+
+    assert [item.clip.start_seconds for item in items] == [0.0, 2.0, 4.0]
+
+
+def test_remove_many_with_no_indices_keeps_everything():
+    items = ItemList()
+    items.add(Item(clip=Clip(0.0, 1.0)))
+    items.add(Item(clip=Clip(1.0, 2.0)))
+
+    items.remove_many([])
+
+    assert len(items) == 2
+
+
 def test_replace_swaps_item_at_index():
     items = ItemList()
     items.add(Item(clip=Clip(0.0, 1.0), text="old"))

@@ -5,7 +5,15 @@
 ; Build with:  ISCC packaging\installer.iss   (run from the repo root)
 
 #define MyAppName "Flashcard Generator"
-#define MyAppVersion "0.1.0"
+; Overridden by build_windows.ps1 via `ISCC /DMyAppVersion=x.y.z`, which reads
+; the version straight from flashcard_generator/__init__.py — that file (also
+; shown in the app's own window title) is this project's one source of truth
+; for its version number, so a standalone `ISCC installer.iss` run (no /D
+; override) falls back to this literal rather than silently stamping the
+; wrong version.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0"
+#endif
 #define MyAppPublisher "Colby Birkhead"
 #define MyAppExeName "FlashcardGenerator.exe"
 

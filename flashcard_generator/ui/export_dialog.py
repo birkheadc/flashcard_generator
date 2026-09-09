@@ -35,10 +35,10 @@ class ExportDialog(QDialog):
     state — closing it after a successful export leaves nothing to undo or
     resume. The deck name itself is *not* owned by this dialog — it's a
     persistent, in-app setting (`MainWindow._deck_name_edit`, autosaved in
-    `session.py`) edited from the main toolbar, since this dialog is modal
-    and would otherwise block editing it right when the user needs to
-    check/change it before exporting. This dialog only displays the
-    current value for confirmation.
+    `session.py`) edited from its own bar above the main panels, since this
+    dialog is modal and would otherwise block editing it right when the
+    user needs to check/change it before exporting. This dialog only
+    displays the current value for confirmation.
 
     `initial_output_path`, when given, prefills the output path field with
     the last path exported to (persisted by `MainWindow` in session.json)
@@ -80,9 +80,9 @@ class ExportDialog(QDialog):
         deck_name_value = QLabel(self._deck_name or "(none set)", self)
         self._layout.addWidget(deck_name_value)
         deck_name_hint = QLabel(
-            "Set from the toolbar's \"Anki Deck Name\" field — must exactly "
-            "match an existing Anki deck's name to import into it, "
-            "otherwise Anki creates a new deck with this name.",
+            "Set from the \"Anki Deck Name\" field above the waveform — "
+            "must exactly match an existing Anki deck's name to import "
+            "into it, otherwise Anki creates a new deck with this name.",
             self,
         )
         deck_name_hint.setObjectName("hintLabel")

@@ -102,8 +102,8 @@ def test_render_card_default_templates_end_to_end():
     values = {"Text": "これは{{c1::サンプル}}です", "Audio": "🔊 0:00–0:02"}
     front = render_card(template.front_template, values, reveal=False)
     back = render_card(template.back_template, values, reveal=True)
-    assert front == "これは[...]です"
-    assert back == "これはサンプルです<br>🔊 0:00–0:02"
+    assert front == '<div style="text-align: center;">🔊 0:00–0:02<br>これは[...]です</div>'
+    assert back == '<div style="text-align: center;">🔊 0:00–0:02<br>これはサンプルです</div>'
 
 
 def test_render_card_shows_only_the_active_clozes_card():

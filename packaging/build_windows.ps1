@@ -36,8 +36,13 @@ try {
     }
 
     if ($isccPath) {
-        Write-Host "==> Building installer with Inno Setup"
-        & $isccPath "packaging\installer.iss"
+        # flashcard_generator/__init__.py's __version__ is this project's one
+        # source of truth for its version number (also shown in the app's own
+        # window title) — read it here instead of keeping a second, easy-to-
+        # forget copy hardcoded in installer.iss.
+        $version = (python -c "from flashcard_generator import __version__; print(__version__)").Trim()
+        Write-Host "==> Building installer with Inno Setup (version $version)"
+        & $isccPath "/DMyAppVersion=$version" "packaging\installer.iss"
         Write-Host "==> Installer written to dist\installer\FlashcardGeneratorSetup.exe"
     } else {
         Write-Warning "ISCC.exe (Inno Setup) not found on PATH or in its default install location."

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import __version__
 from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
 from ..export import ExportBlockedError, default_deck_name, export_apkg
@@ -45,6 +48,7 @@ from . import theme
 from .format_time import format_time, format_time_ago
 from .export_dialog import ExportDialog
 from .icons import icon
+from .preferences_dialog import PreferencesDialog
 from .template_dialog import NoteTemplateDialog
 from .waveform_view import WaveformView
 
@@ -55,17 +59,27 @@ AUDIO_FILE_FILTER = (
 
 NOT_YET_IMPLEMENTED = "Not yet implemented — see ROADMAP.md"
 
+# Shown in the window title so "which build is this" is answerable at a
+# glance after an upgrade, without opening an About dialog that doesn't
+# exist yet — __version__ is this app's one source of truth, also read by
+# packaging/build_windows.ps1 when stamping the installer's own version.
+APP_TITLE = f"Flashcard Generator v{__version__}"
+
 # Clip table columns and their fixed widths (Sentence is the one column that
 # stretches). Widths are fixed rather than content-driven, per the mockup's
 # own column layout (Bootstrapper.dc.html's header row: Range 112px, State
 # 96px), so an item flipping between "Drafted"/"Not drafted" doesn't reflow
 # the whole table. The Actions column (play + delete) isn't in the mockup
-# and is sized to fit both icon buttons.
-RANGE_COLUMN = 0
-TEXT_COLUMN = 1
-STATE_COLUMN = 2
-ACTIONS_COLUMN = 3
+# and is sized to fit both icon buttons. Keep (a checkbox, not in the mockup
+# either) is the bulk-review affordance for "Suggest Clips dumped in a pile
+# of candidates, check off the ones worth keeping, discard the rest".
+CHECK_COLUMN = 0
+RANGE_COLUMN = 1
+TEXT_COLUMN = 2
+STATE_COLUMN = 3
+ACTIONS_COLUMN = 4
 
+CHECK_COLUMN_WIDTH = 36
 RANGE_COLUMN_WIDTH = 132
 STATE_COLUMN_WIDTH = 118
 ACTIONS_COLUMN_WIDTH = 76
@@ -132,7 +146,7 @@ class ItemTextEdit(QPlainTextEdit):
 
 
 class ItemTableWidget(QTableWidget):
-    """The clip deck: one row per item, columns Range/Sentence/State/Actions.
+    """The clip deck: one row per item, columns Keep/Range/Sentence/State/Actions.
 
     Delete/Backspace is bound to discarding the selected item, per
     DESIGN.md §12's keyboard model. Also adds a couple of QListWidget-style
@@ -143,11 +157,12 @@ class ItemTableWidget(QTableWidget):
     delete_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
-        super().__init__(0, 4, parent)
-        # No header text for the Actions column — it's just a row of icon
-        # buttons, a label would only add noise.
+        super().__init__(0, 5, parent)
+        # No header text for Keep (a checkbox, self-explanatory once seen)
+        # or Actions (just a row of icon buttons) — a label would only add
+        # noise to either.
         self.setHorizontalHeaderLabels(
-            [theme.section_label_text(t) for t in ("Range", "Sentence", "State", "")]
+            [theme.section_label_text(t) for t in ("", "Range", "Sentence", "State", "")]
         )
         self.verticalHeader().setVisible(False)
         # Rows default to a height driven by the text font, which is too
@@ -165,10 +180,12 @@ class ItemTableWidget(QTableWidget):
         # drafted" being different widths must not reflow every other row.
         header = self.horizontalHeader()
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header.setSectionResizeMode(CHECK_COLUMN, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(RANGE_COLUMN, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(TEXT_COLUMN, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(STATE_COLUMN, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(ACTIONS_COLUMN, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(CHECK_COLUMN, CHECK_COLUMN_WIDTH)
         self.setColumnWidth(RANGE_COLUMN, RANGE_COLUMN_WIDTH)
         self.setColumnWidth(STATE_COLUMN, STATE_COLUMN_WIDTH)
         self.setColumnWidth(ACTIONS_COLUMN, ACTIONS_COLUMN_WIDTH)
@@ -188,9 +205,16 @@ class MainWindow(QMainWindow):
     _START_DELAY_MS = 60
     _MIN_VISIBLE_MS = 400
 
+    # Real values are measured at the end of _build_toolbar; class-level
+    # (not set in __init__) so they're already 0 for any resizeEvent Qt
+    # dispatches before then — as early as the self.resize() call below,
+    # well before self._toolbar exists — rather than an AttributeError.
+    _toolbar_text_width = 0
+    _toolbar_icon_only_width = 0
+
     def __init__(self, session_path: Path | None = None):
         super().__init__()
-        self.setWindowTitle("Flashcard Generator")
+        self.setWindowTitle(APP_TITLE)
         self.resize(1280, 760)
         theme.ensure_fonts_loaded()
         self.setStyleSheet(theme.STYLESHEET)
@@ -214,10 +238,20 @@ class MainWindow(QMainWindow):
         self._session_path = session_path if session_path is not None else default_session_path()
         self._pending_selection: tuple[float, float] | None = None
         self._loop_range: tuple[float, float] | None = None
-        self._loop_source: str | None = None  # "item" | "selection" | None
+        self._loop_source: str | None = None  # "item" | "selection" | "row" | None
         self._loop_item_index: int | None = None
+        # Whether reaching the end of _loop_range seeks back to its start
+        # (the item editor's "Loop Preview"/"Play Selection (Loop)") or just
+        # stops (the clip deck's row Play, a single listen-through while
+        # scanning many rows rather than a repeated editing loop).
+        self._loop_repeats = True
+        # Which items (by id(), pruned in _refresh_item_list_widget whenever
+        # an item is no longer in the list) currently have their Keep box
+        # checked, for the "Discard Unchecked" bulk-review action.
+        self._checked_item_ids: set[int] = set()
         self._loading_item_text = False
         self._loading_extra_fields = False
+        self._loading_transcript_text = False
         self._last_autosave_time: datetime | None = None
 
         self._build_ui()
@@ -245,6 +279,9 @@ class MainWindow(QMainWindow):
         # content and between panels, so this deliberately departs from it.
         central_layout.setContentsMargins(10, 10, 10, 10)
         central_layout.setSpacing(0)
+
+        central_layout.addWidget(self._build_deck_name_bar())
+        central_layout.addSpacing(10)
 
         main_splitter = QSplitter(Qt.Orientation.Vertical, central)
         main_splitter.setHandleWidth(10)
@@ -280,6 +317,40 @@ class MainWindow(QMainWindow):
 
         self._build_status_bar()
 
+    def _build_deck_name_bar(self) -> QWidget:
+        # Its own full-width row rather than a cramped stacked label+input
+        # squeezed into the toolbar (where it used to live, fighting a
+        # dozen icon buttons for space and a fixed 180px cap on the input):
+        # the deck name is what every export actually writes into, so it
+        # gets real, dedicated space and a normal-sized label instead of a
+        # tiny uppercase one.
+        bar = QFrame(self)
+        bar.setObjectName("deckNameBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(12)
+
+        icon_label = QLabel(bar)
+        icon_label.setPixmap(icon("mdi6.cards-outline", color=theme.ACTION_PRIMARY).pixmap(20, 20))
+        layout.addWidget(icon_label)
+
+        label = QLabel("Anki Deck Name", bar)
+        label.setObjectName("deckNameBarLabel")
+        layout.addWidget(label)
+
+        self._deck_name_edit = QLineEdit(bar)
+        self._deck_name_edit.setPlaceholderText("Exact name of the Anki deck to import into")
+        self._deck_name_edit.setToolTip(
+            "Enter the exact name of the Anki deck you want these cards to "
+            "import into. If no deck with this name exists in Anki yet, "
+            "importing the export will create one."
+        )
+        self._deck_name_edit.setEnabled(False)
+        self._deck_name_edit.textEdited.connect(self._on_deck_name_edited)
+        layout.addWidget(self._deck_name_edit, 1)
+
+        return bar
+
     def _build_waveform_panel(self) -> QWidget:
         panel = QWidget(self)
         panel.setObjectName("waveformPanel")
@@ -306,6 +377,7 @@ class MainWindow(QMainWindow):
         )
         hint.setObjectName("hintLabel")
         hint.setContentsMargins(12, 2, 12, 2)
+        hint.setWordWrap(True)
         layout.addWidget(hint)
 
         transport = QFrame(panel)
@@ -313,18 +385,23 @@ class MainWindow(QMainWindow):
         transport_layout = QHBoxLayout(transport)
         transport_layout.setContentsMargins(12, 6, 12, 6)
 
-        self._play_button = QPushButton("Play")
+        # Icon-only (with a tooltip standing in for the label) rather than
+        # text buttons — "Play"/"Play Selection (Loop)" were the widest
+        # things in this row, wide enough to force the whole panel (and its
+        # QSplitter pane) to never shrink below that width, which is exactly
+        # the room the transcript pane needs when its own content grows.
+        self._play_button = QPushButton()
         self._play_button.setIcon(icon("mdi6.play"))
+        self._play_button.setToolTip("Play")
         self._play_button.setEnabled(False)
         self._play_button.clicked.connect(self._toggle_playback)
-        _lock_toggle_button_width(self._play_button, "Play", "Pause")
         transport_layout.addWidget(self._play_button)
 
-        self._play_selection_button = QPushButton("Play Selection (Loop)")
+        self._play_selection_button = QPushButton()
         self._play_selection_button.setIcon(icon("mdi6.repeat-variant"))
+        self._play_selection_button.setToolTip("Play Selection (Loop)")
         self._play_selection_button.setEnabled(False)
         self._play_selection_button.clicked.connect(self._on_play_selection_clicked)
-        _lock_toggle_button_width(self._play_selection_button, "Play Selection (Loop)", "Stop")
         transport_layout.addWidget(self._play_selection_button)
 
         self._time_label = QLabel("0:00 / 0:00")
@@ -333,13 +410,7 @@ class MainWindow(QMainWindow):
 
         transport_layout.addSpacing(8)
 
-        split_at_playhead_button = QPushButton("Split at Playhead")
-        split_at_playhead_button.setIcon(icon("mdi6.call-split"))
-        split_at_playhead_button.setEnabled(False)
-        split_at_playhead_button.setToolTip(NOT_YET_IMPLEMENTED)
-        transport_layout.addWidget(split_at_playhead_button)
-
-        self._add_item_button = QPushButton("Clip from Selection")
+        self._add_item_button = QPushButton("Clip")
         self._add_item_button.setIcon(icon("mdi6.content-cut"))
         self._add_item_button.setEnabled(False)
         self._add_item_button.setToolTip("Select a region on the waveform (Shift+drag) first")
@@ -371,15 +442,20 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
         layout.addWidget(header)
 
-        # Read-only, but text-selectable: the raw transcript is shown as-is
-        # (no automatic splitting — that only makes sense once forced
-        # alignment (Phase 9) exists to do it against known audio timing).
+        # Editable: the raw transcript is shown as-is (no automatic
+        # splitting — that only makes sense once forced alignment (Phase 9)
+        # exists to do it against known audio timing) but a transcript is
+        # rarely word-perfect (ASR mistakes, formatting quirks), so the user
+        # can correct it in place rather than only ever selecting from it.
         # The user highlights whatever span they want, like in any text
         # editor, and "Use Selection as Text" below copies it onto the
-        # currently selected item.
+        # currently selected item. No border of its own — the panel already
+        # has one, and stacking a second rounded border directly against it
+        # just looked like a rendering glitch.
         self._transcript_text_edit = QPlainTextEdit(panel)
-        self._transcript_text_edit.setReadOnly(True)
+        self._transcript_text_edit.setObjectName("transcriptTextEdit")
         self._transcript_text_edit.selectionChanged.connect(self._update_match_button_enabled)
+        self._transcript_text_edit.textChanged.connect(self._on_transcript_text_edited)
         layout.addWidget(self._transcript_text_edit, 1)
 
         footer = QFrame(panel)
@@ -423,6 +499,7 @@ class MainWindow(QMainWindow):
             lambda row, _col, _prow, _pcol: self._on_current_item_changed(row)
         )
         self._item_list_widget.delete_requested.connect(self._on_remove_item_clicked)
+        self._item_list_widget.itemChanged.connect(self._on_item_check_changed)
         layout.addWidget(self._item_list_widget, 1)
 
         footer = QFrame(panel)
@@ -433,6 +510,22 @@ class MainWindow(QMainWindow):
         self._items_ready_label.setObjectName("metaLabel")
         footer_layout.addWidget(self._items_ready_label)
         footer_layout.addStretch()
+        # "Save these, delete rest" for a pile of Suggest Clips candidates:
+        # check the Keep box on the ones worth keeping, then discard
+        # whatever's left unchecked in one action, instead of deleting
+        # unwanted clips one at a time.
+        self._discard_unchecked_button = QPushButton("Discard Unchecked")
+        self._discard_unchecked_button.setIcon(
+            icon("mdi6.trash-can-outline", color=theme.ACTION_DANGER)
+        )
+        self._discard_unchecked_button.setObjectName("dangerButton")
+        self._discard_unchecked_button.setToolTip(
+            "Check the Keep box on the clips you want, then discard everything "
+            "still unchecked"
+        )
+        self._discard_unchecked_button.setEnabled(False)
+        self._discard_unchecked_button.clicked.connect(self._on_discard_unchecked_clicked)
+        footer_layout.addWidget(self._discard_unchecked_button)
         self._clear_all_button = QPushButton("Clear All")
         self._clear_all_button.setIcon(icon("mdi6.trash-can-outline", color=theme.ACTION_DANGER))
         self._clear_all_button.setObjectName("dangerButton")
@@ -664,24 +757,24 @@ class MainWindow(QMainWindow):
         self.setStatusBar(bar)
 
     def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Main", self)
-        toolbar.setObjectName("mainToolbar")
-        toolbar.setMovable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.addToolBar(toolbar)
+        self._toolbar = QToolBar("Main", self)
+        self._toolbar.setObjectName("mainToolbar")
+        self._toolbar.setMovable(False)
+        self._toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.addToolBar(self._toolbar)
 
         import_action = QAction(icon("mdi6.folder-open-outline", color=theme.PAPER_0), "Import Audio", self)
         import_action.setShortcut("Ctrl+O")
         import_action.triggered.connect(self._import_file)
-        toolbar.addAction(import_action)
-        toolbar.widgetForAction(import_action).setObjectName("primaryToolButton")
+        self._toolbar.addAction(import_action)
+        self._toolbar.widgetForAction(import_action).setObjectName("primaryToolButton")
 
         record_action = QAction(icon("mdi6.microphone-outline"), "Record in-app", self)
         record_action.setEnabled(False)
         record_action.setToolTip("Not yet implemented")
-        toolbar.addAction(record_action)
+        self._toolbar.addAction(record_action)
 
-        toolbar.addSeparator()
+        self._toolbar.addSeparator()
 
         self._import_transcript_action = QAction(
             icon("mdi6.file-document-outline"), "Import Transcript", self
@@ -689,94 +782,108 @@ class MainWindow(QMainWindow):
         self._import_transcript_action.setEnabled(False)
         self._import_transcript_action.setToolTip("Import an audio file first")
         self._import_transcript_action.triggered.connect(self._import_transcript)
-        toolbar.addAction(self._import_transcript_action)
+        self._toolbar.addAction(self._import_transcript_action)
 
         self._suggest_clips_action = QAction(icon("mdi6.auto-fix"), "Suggest Clips", self)
         self._suggest_clips_action.setEnabled(False)
         self._suggest_clips_action.setToolTip("Import an audio file first")
         self._suggest_clips_action.triggered.connect(self._on_suggest_clips_clicked)
-        toolbar.addAction(self._suggest_clips_action)
+        self._toolbar.addAction(self._suggest_clips_action)
 
         align_action = QAction(icon("mdi6.sync"), "Align Transcript", self)
         align_action.setEnabled(False)
         align_action.setToolTip(NOT_YET_IMPLEMENTED)
-        toolbar.addAction(align_action)
+        self._toolbar.addAction(align_action)
 
-        spacer = QWidget(self)
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        toolbar.addWidget(spacer)
+        self._toolbar.addSeparator()
 
         self._template_action = QAction(icon("mdi6.card-text-outline"), "Note Template", self)
         self._template_action.triggered.connect(self._open_template_dialog)
-        toolbar.addAction(self._template_action)
-
-        deck_name_container = QWidget(self)
-        deck_name_layout = QVBoxLayout(deck_name_container)
-        # Stacked (label above input) rather than side-by-side, to keep this
-        # narrow in the toolbar's one dimension that's actually scarce
-        # (horizontal) — unlike the panels below, the toolbar has plenty of
-        # vertical room to spare. No side margins here (unlike the buttons'
-        # own padding) — the toolbar's own inter-item `spacing` already
-        # provides the same gap it puts between every other pair of items,
-        # so adding more here would make this one item's margins uneven
-        # against its neighbors rather than matching them.
-        deck_name_layout.setContentsMargins(0, 0, 0, 0)
-        deck_name_layout.setSpacing(1)
-        deck_name_label = self._section_label("Anki Deck Name")
-        deck_name_layout.addWidget(deck_name_label)
-        self._deck_name_edit = QLineEdit(deck_name_container)
-        self._deck_name_edit.setPlaceholderText("Anki deck name")
-        self._deck_name_edit.setToolTip(
-            "Must exactly match an existing Anki deck's name to import into "
-            "it on export — otherwise Anki creates a new deck with this name."
-        )
-        self._deck_name_edit.setFixedWidth(180)
-        self._deck_name_edit.setEnabled(False)
-        self._deck_name_edit.textEdited.connect(self._on_deck_name_edited)
-
-        # A toolbar centers each item within the row's height, which is set
-        # by its tallest item. Left alone, this stacked label+input block is
-        # taller than a single-line button and — being the tallest item
-        # itself — ends up flush to the row's full height while the
-        # (shorter, centered) buttons get equal empty space above and below,
-        # so the input's bottom edge lands past the buttons' bottom edge
-        # rather than flush with it. Explicitly matching this container's
-        # height to a real toolbar button's (measured via sizeHint, same
-        # approach `_lock_toggle_button_width` uses for width) makes both
-        # items the same height, so the toolbar's own centering lines up
-        # their tops and bottoms identically with no further tweaking.
-        reference_button = toolbar.widgetForAction(self._template_action)
-        if reference_button is not None:
-            row_height = reference_button.sizeHint().height()
-            input_height = max(
-                row_height - deck_name_label.sizeHint().height() - deck_name_layout.spacing(),
-                18,
-            )
-            self._deck_name_edit.setFixedHeight(input_height)
-            deck_name_container.setFixedHeight(row_height)
-        deck_name_layout.addWidget(self._deck_name_edit)
-        toolbar.addWidget(deck_name_container)
+        self._toolbar.addAction(self._template_action)
 
         self._export_action = QAction(icon("mdi6.export-variant"), "Export", self)
         self._export_action.setShortcut("Ctrl+E")
         self._export_action.setEnabled(False)
         self._export_action.setToolTip("Add at least one item first")
         self._export_action.triggered.connect(self._open_export_dialog)
-        toolbar.addAction(self._export_action)
+        self._toolbar.addAction(self._export_action)
 
         self._quick_export_action = QAction(icon("mdi6.lightning-bolt-outline"), "Quick Export", self)
         self._quick_export_action.setShortcut("Ctrl+Shift+E")
         self._quick_export_action.setEnabled(False)
         self._quick_export_action.setToolTip("Export once first to set an output file")
         self._quick_export_action.triggered.connect(self._on_quick_export_clicked)
-        toolbar.addAction(self._quick_export_action)
+        self._toolbar.addAction(self._quick_export_action)
 
-        toolbar.addSeparator()
+        # The one deliberate expanding gap in the toolbar (everywhere else
+        # is a plain separator, all the same width) — pushing Preferences
+        # to the far right is a standard place for it, not just leftover
+        # space nothing else claimed.
+        spacer = QWidget(self)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._toolbar.addWidget(spacer)
 
         preferences_action = QAction(icon("mdi6.cog-outline"), "Preferences", self)
-        preferences_action.setEnabled(False)
-        preferences_action.setToolTip(NOT_YET_IMPLEMENTED)
-        toolbar.addAction(preferences_action)
+        preferences_action.triggered.connect(self._open_preferences_dialog)
+        self._toolbar.addAction(preferences_action)
+
+        # How wide the toolbar actually needs to be in each button style,
+        # measured once right after building it (while nothing has yet
+        # squeezed it) — resizeEvent below uses these to switch to a
+        # compact icon-only style once the window gets too narrow for full
+        # text labels, and to stop the window shrinking any further once
+        # even icon-only buttons wouldn't all fit. Replaces relying on
+        # Qt's own toolbar overflow ("»") button, which hid actions behind
+        # a second, easy-to-miss row rather than shrinking predictably.
+        self._toolbar_icon_only_width = self._measure_toolbar_width(
+            Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        self._toolbar_text_width = self._measure_toolbar_width(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.setMinimumWidth(self._toolbar_icon_only_width)
+        # The full toolbar turns out to need more than the 1280px default
+        # window width from __init__ — widen the initial window rather than
+        # opening already-compact on an otherwise perfectly roomy monitor.
+        # If the actual screen is narrower than this, the window manager
+        # clamps it and resizeEvent falls back to compact mode anyway.
+        if self.width() < self._toolbar_text_width:
+            self.resize(self._toolbar_text_width + 40, self.height())
+
+    def _measure_toolbar_width(self, style: Qt.ToolButtonStyle) -> int:
+        # QToolBar.sizeHint() doesn't actually respond to toolButtonStyle
+        # changes before the toolbar has been shown/laid out at least once
+        # (confirmed by hand — it kept returning the same value across both
+        # styles) — each *button's* own sizeHint does respond immediately,
+        # so this sums those directly instead, plus the toolbar's own QSS
+        # padding/spacing (theme.py's `padding`/`spacing` on
+        # QToolBar#mainToolbar) which won't show up in any widget's sizeHint.
+        self._toolbar.setToolButtonStyle(style)
+        widgets = [
+            self._toolbar.widgetForAction(action)
+            for action in self._toolbar.actions()
+        ]
+        widgets = [w for w in widgets if w is not None]
+        total = sum(w.sizeHint().width() for w in widgets)
+        if len(widgets) > 1:
+            total += theme.SPACE_4 * (len(widgets) - 1)
+        return total + theme.SPACE_5 * 2
+
+    def _update_toolbar_compactness(self) -> None:
+        if not hasattr(self, "_toolbar"):
+            return
+        compact = self.width() < self._toolbar_text_width
+        style = (
+            Qt.ToolButtonStyle.ToolButtonIconOnly
+            if compact
+            else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        if self._toolbar.toolButtonStyle() != style:
+            self._toolbar.setToolButtonStyle(style)
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001 - Qt override signature
+        super().resizeEvent(event)
+        self._update_toolbar_compactness()
 
     def _import_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import audio file", "", AUDIO_FILE_FILTER)
@@ -824,7 +931,7 @@ class MainWindow(QMainWindow):
         self._import_transcript_action.setToolTip("")
         self._suggest_clips_action.setEnabled(True)
         self._suggest_clips_action.setToolTip("")
-        self.setWindowTitle(f"Flashcard Generator — {Path(path).name}")
+        self.setWindowTitle(f"{APP_TITLE} — {Path(path).name}")
 
         self._audio_path = str(Path(path).resolve())
         self._deck_name = (
@@ -964,12 +1071,26 @@ class MainWindow(QMainWindow):
         self._refresh_item_list_widget(select_index=first_new_index)
         self._update_item_regions()
         self._save_session()
-        self.statusBar().showMessage(f"Added {len(clips)} suggested clip(s).", 5000)
+        self.statusBar().showMessage(
+            f"Added {len(clips)} suggested clip(s). Check Keep on the ones you want, "
+            "then Discard Unchecked to drop the rest.",
+            8000,
+        )
 
     def _set_transcript_text(self, text: str) -> None:
         self._transcript_text = text
-        self._transcript_text_edit.setPlainText(text)
+        self._loading_transcript_text = True
+        try:
+            self._transcript_text_edit.setPlainText(text)
+        finally:
+            self._loading_transcript_text = False
         self._transcript_panel.setVisible(bool(text))
+
+    def _on_transcript_text_edited(self) -> None:
+        if self._loading_transcript_text:
+            return
+        self._transcript_text = self._transcript_text_edit.toPlainText()
+        self._save_session()
 
     def _update_autosave_label(self) -> None:
         if self._last_autosave_time is None:
@@ -1024,7 +1145,24 @@ class MainWindow(QMainWindow):
 
     def _on_position_changed(self, position_ms: int) -> None:
         if self._loop_range is not None and position_ms >= self._loop_range[1] * 1000:
-            self._player.setPosition(int(self._loop_range[0] * 1000))
+            if self._loop_repeats:
+                # Seeking straight back to the loop start *while still
+                # playing* raced the audio backend's own output buffering:
+                # positionChanged reports the decoder's position, which runs
+                # ahead of what's actually reached the speakers, so jumping
+                # the decoder to the loop start immediately discarded the
+                # last bit of the old buffered audio before it was ever
+                # heard — the clip appeared to cut off early even though the
+                # exported file (played once, start to finish, no mid-stream
+                # seek) was never actually missing anything. Pausing first
+                # lets whatever's already queued in the output buffer finish
+                # playing out before the seek, then resumes from the loop
+                # start on a clean buffer.
+                self._player.pause()
+                self._player.setPosition(int(self._loop_range[0] * 1000))
+                self._player.play()
+            else:
+                self._stop_loop()
         self._waveform.set_position(position_ms / 1000)
         self._update_time_label(position_ms)
 
@@ -1040,10 +1178,10 @@ class MainWindow(QMainWindow):
 
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         if state == QMediaPlayer.PlaybackState.PlayingState:
-            self._play_button.setText("Pause")
+            self._play_button.setToolTip("Pause")
             self._play_button.setIcon(icon("mdi6.pause"))
         else:
-            self._play_button.setText("Play")
+            self._play_button.setToolTip("Play")
             self._play_button.setIcon(icon("mdi6.play"))
 
     def _on_player_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
@@ -1247,14 +1385,17 @@ class MainWindow(QMainWindow):
             return
         self._start_loop(selection, source="selection")
 
-    def _start_loop(self, loop_range: tuple[float, float], source: str) -> None:
+    def _start_loop(
+        self, loop_range: tuple[float, float], source: str, *, repeat: bool = True
+    ) -> None:
         self._loop_range = loop_range
         self._loop_source = source
+        self._loop_repeats = repeat
         self._player.setPosition(int(loop_range[0] * 1000))
         self._player.play()
         self._preview_button.setText("Stop Preview" if source == "item" else "Loop Preview")
         self._preview_button.setIcon(icon("mdi6.stop" if source == "item" else "mdi6.repeat-variant"))
-        self._play_selection_button.setText(
+        self._play_selection_button.setToolTip(
             "Stop" if source == "selection" else "Play Selection (Loop)"
         )
         self._play_selection_button.setIcon(
@@ -1267,22 +1408,33 @@ class MainWindow(QMainWindow):
         self._loop_range = None
         self._loop_source = None
         self._loop_item_index = None
+        self._loop_repeats = True
         self._player.pause()
         self._preview_button.setText("Loop Preview")
         self._preview_button.setIcon(icon("mdi6.repeat-variant"))
-        self._play_selection_button.setText("Play Selection (Loop)")
+        self._play_selection_button.setToolTip("Play Selection (Loop)")
         self._play_selection_button.setIcon(icon("mdi6.repeat-variant"))
 
     def _refresh_item_list_widget(self, select_index: int | None = None) -> None:
         if select_index is None:
             select_index = self._item_list_widget.currentRow()
-        self._item_list_widget.setRowCount(len(self._items))
-        for i, item in enumerate(self._items):
-            self._populate_row(i, item)
+        # Drop any checked-id bookkeeping for items no longer in the list,
+        # so a stale id can never be misread as "checked" again if a later
+        # item object happens to get the same id() (CPython can and does
+        # reuse a freed object's address).
+        self._checked_item_ids &= {id(i) for i in self._items}
+        self._item_list_widget.blockSignals(True)
+        try:
+            self._item_list_widget.setRowCount(len(self._items))
+            for i, item in enumerate(self._items):
+                self._populate_row(i, item)
+        finally:
+            self._item_list_widget.blockSignals(False)
         if 0 <= select_index < len(self._items):
             self._item_list_widget.setCurrentRow(select_index)
         self._update_item_buttons_enabled()
         self._update_items_meta()
+        self._update_discard_unchecked_button()
 
     def _populate_row(self, row: int, item: Item) -> None:
         clip = item.clip
@@ -1299,6 +1451,16 @@ class MainWindow(QMainWindow):
         if len(preview) > 60:
             preview = preview[:60] + "…"
         status_text, tone = self._item_status(item)
+
+        check_item = QTableWidgetItem()
+        check_item.setFlags(
+            (check_item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable
+        )
+        check_item.setToolTip("Keep this clip")
+        check_item.setCheckState(
+            Qt.CheckState.Checked if id(item) in self._checked_item_ids else Qt.CheckState.Unchecked
+        )
+        self._item_list_widget.setItem(row, CHECK_COLUMN, check_item)
 
         range_item = QTableWidgetItem(range_text)
         range_item.setFlags(range_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1367,7 +1529,7 @@ class MainWindow(QMainWindow):
         play_button = QPushButton()
         play_button.setIcon(icon("mdi6.play", color=theme.ACTION_PRIMARY))
         play_button.setObjectName("rowIconButton")
-        play_button.setToolTip("Loop-play this clip")
+        play_button.setToolTip("Play this clip")
         play_button.setFixedSize(ROW_ICON_BUTTON_SIZE, ROW_ICON_BUTTON_SIZE)
         play_button.clicked.connect(lambda _checked=False, r=row: self._on_row_play_clicked(r))
         layout.addWidget(play_button)
@@ -1384,8 +1546,19 @@ class MainWindow(QMainWindow):
         return container
 
     def _on_row_play_clicked(self, row: int) -> None:
+        # Plays the clip once and stops, unlike the item editor's own "Loop
+        # Preview" (_on_preview_clicked) — the clip deck is for a quick
+        # listen while scanning many rows, not the repeated listening loop
+        # that editing/transcribing a single item calls for.
         self._item_list_widget.setCurrentRow(row)
-        self._on_preview_clicked()
+        if self._loop_source == "row" and self._loop_item_index == row:
+            self._stop_loop()
+            return
+        item = self._items[row]
+        self._loop_item_index = row
+        self._start_loop(
+            (item.clip.start_seconds, item.clip.end_seconds), source="row", repeat=False
+        )
 
     def _on_row_delete_clicked(self, row: int) -> None:
         self._item_list_widget.setCurrentRow(row)
@@ -1424,6 +1597,57 @@ class MainWindow(QMainWindow):
 
     def _update_item_regions(self) -> None:
         self._waveform.set_clip_regions(self._items.regions())
+
+    # -- bulk "keep these, discard rest" review (Keep checkbox column) ------
+
+    def _on_item_check_changed(self, table_item: QTableWidgetItem) -> None:
+        if table_item.column() != CHECK_COLUMN:
+            return
+        row = table_item.row()
+        if not (0 <= row < len(self._items)):
+            return
+        item_id = id(self._items[row])
+        if table_item.checkState() == Qt.CheckState.Checked:
+            self._checked_item_ids.add(item_id)
+        else:
+            self._checked_item_ids.discard(item_id)
+        self._update_discard_unchecked_button()
+
+    def _update_discard_unchecked_button(self) -> None:
+        checked = len(self._checked_item_ids)
+        total = len(self._items)
+        unchecked = total - checked
+        self._discard_unchecked_button.setEnabled(0 < checked < total)
+        self._discard_unchecked_button.setText(
+            f"Discard Unchecked ({unchecked})" if checked else "Discard Unchecked"
+        )
+
+    def _on_discard_unchecked_clicked(self) -> None:
+        keep_indices = {
+            i for i, item in enumerate(self._items) if id(item) in self._checked_item_ids
+        }
+        discard_count = len(self._items) - len(keep_indices)
+        if discard_count <= 0:
+            return
+        plural = "" if discard_count == 1 else "s"
+        choice = QMessageBox.warning(
+            self,
+            "Discard unchecked clips?",
+            f"This will permanently discard the {discard_count} clip{plural} "
+            "that aren't checked, keeping the rest.\n\nContinue anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        if self._loop_source == "item":
+            self._stop_loop()
+        discard_indices = [i for i in range(len(self._items)) if i not in keep_indices]
+        self._items.remove_many(discard_indices)
+        self._checked_item_ids.clear()
+        self._refresh_item_list_widget()
+        self._update_item_regions()
+        self._save_session()
 
     # -- cloze selection & card template (Phase 5, multi-cloze in 5.5) ------
 
@@ -1698,6 +1922,21 @@ class MainWindow(QMainWindow):
         self._update_card_preview()
         self._save_session()
 
+    # -- preferences ----------------------------------------------------------
+
+    def _open_preferences_dialog(self) -> None:
+        dialog = PreferencesDialog(self)
+        dialog.reset_all_confirmed.connect(self._on_reset_all_confirmed)
+        dialog.exec()
+
+    def _on_reset_all_confirmed(self) -> None:
+        # Deletes the two files first and relaunches immediately after, in
+        # the same call — no Qt event-loop turn runs in between where some
+        # other queued autosave could recreate what was just deleted.
+        self._session_path.unlink(missing_ok=True)
+        self._template_library_path.unlink(missing_ok=True)
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
     # -- export (Phase 6) ----------------------------------------------------
 
     def _on_deck_name_edited(self, text: str) -> None:
@@ -1735,16 +1974,33 @@ class MainWindow(QMainWindow):
     def _on_quick_export_clicked(self) -> None:
         if not self._last_export_path or len(self._items) == 0 or self._audio_path is None:
             return
-        try:
+        export_path = self._last_export_path
+
+        def _do_export() -> None:
             export_apkg(
                 self._items,
                 self._template,
                 self._audio_path,
                 self._deck_name.strip(),
-                self._last_export_path,
+                export_path,
                 skip_incomplete=False,
             )
-        except ExportBlockedError as exc:
+
+        # A blocking export.export_apkg call previously ran with no visible
+        # feedback beyond a status bar message shown only after the fact —
+        # on a deck with several items (each clip gets its own audio slice
+        # written to disk), that left the window looking frozen/unresponsive
+        # while it ran, and the status bar message alone was easy to miss,
+        # so a "did that actually do anything?" quick-export didn't feel
+        # like it had. The same guaranteed-visible busy dialog Suggest Clips
+        # uses covers both: a spinner while it's genuinely working, and a
+        # brief, hard-to-miss confirmation once it's done.
+        self._run_with_busy_dialog(
+            "Quick Export", "Exporting…", _do_export, self._on_quick_export_done
+        )
+
+    def _on_quick_export_done(self, _result: None, exc: Exception | None) -> None:
+        if isinstance(exc, ExportBlockedError):
             QMessageBox.warning(
                 self,
                 "Cannot quick-export",
@@ -1752,7 +2008,7 @@ class MainWindow(QMainWindow):
                 "open Export to review and skip them, or fix them first.",
             )
             return
-        except OSError as exc:
+        if isinstance(exc, OSError):
             QMessageBox.critical(self, "Export failed", str(exc))
             return
         self.statusBar().showMessage(f"Quick-exported to {self._last_export_path}", 5000)

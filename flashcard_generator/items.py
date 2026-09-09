@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Iterable
 
 from .clips import Clip
 
@@ -90,6 +91,13 @@ class ItemList:
 
     def remove(self, index: int) -> None:
         del self._items[index]
+
+    def remove_many(self, indices: Iterable[int]) -> None:
+        """Remove several indices at once — e.g. "keep the checked clips,
+        discard the rest" — without the caller having to sort/adjust for
+        shifting indices themselves."""
+        drop = set(indices)
+        self._items = [item for i, item in enumerate(self._items) if i not in drop]
 
     def replace(self, index: int, item: Item) -> None:
         self._items[index] = item

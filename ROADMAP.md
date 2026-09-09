@@ -18,10 +18,11 @@ machine. Each phase is independently verifiable before moving to the next.
 Status: **Phase 3 done.** **Phase 7 pulled forward and done early** (see
 note below). **Phase 4 done.** **Phase 5 done.** **Phase 5.5 done.**
 **Phase 6 done.** **Phase 8 done.** **Phase 9 skipped for now** (still
-requires the GPU machine; picked up again later). **Phase 10 implemented,
-pending Windows verification** (see below — building/running it can't
-happen from this Linux dev environment). Next up: **Phase 9** whenever the
-GPU machine is back in the loop, or **Phase 11** if that continues to wait.
+requires the GPU machine; picked up again later). **Phase 10 done,
+verified on a real Windows machine.** **Phase 12 planned, not started.**
+Next up: **Phase 9** whenever the GPU machine is back in the loop,
+**Phase 11** if that continues to wait, or **Phase 12** whenever the next
+release is ready to go out the door.
 
 ## Phase 0 — Bootstrap ✅
 PySide6 app skeleton, `MainWindow` renders. Done.
@@ -504,7 +505,7 @@ PySide6 app skeleton, `MainWindow` renders. Done.
 - **Verify:** run against a sample audio+transcript pair, confirm
   timestamps and matched text are correct for both languages.
 
-## Phase 10 — Packaging *(implemented; verify on Windows)*
+## Phase 10 — Packaging ✅
 - `PyInstaller` build → single executable.
 - **Verify:** run the built executable on the Windows target machine
   (the primary platform per §3), confirm no missing runtime deps.
@@ -549,29 +550,62 @@ PySide6 app skeleton, `MainWindow` renders. Done.
   PyInstaller output specifically, which isn't a tradeoff worth making by
   default for a personal-use tool.
 
-- **Deliberately not verified as "done" here:** PyInstaller doesn't
+- **Not verified from this Linux dev container:** PyInstaller doesn't
   cross-compile — a Windows `.exe` can only be produced by running the
-  build on Windows, so none of this could be built or run inside this
-  repo's Linux dev container. What *was* checked here: the two
-  `collect_data_files` calls resolve real files (above), and
-  `uv sync --group packaging` installs cleanly. The actual build, the
-  installer, and this phase's own verify step (run on the Windows target
-  machine, confirm no missing runtime deps) all still need to happen on
-  Windows — see `packaging/README.md` for the exact commands and a
-  slightly expanded verify checklist (icon rendering and "Suggest Clips"
-  specifically, since those are the two things depending on the
-  hand-collected data files above, not just "does it launch").
+  build on Windows, so none of this could be built or run here. What *was*
+  checked here: the two `collect_data_files` calls resolve real files
+  (above), and `uv sync --group packaging` installs cleanly.
+- **Verified (post-implementation):** built and run on a real Windows
+  machine — installer builds, installs, and launches the app
+  successfully. Surfaced a handful of Windows-only follow-up bugs (native
+  controls partly rendering from the OS's own theme instead of this app's,
+  independent of this phase — see the `ui/theme.py::apply_app_theme`
+  fix noted wherever the UI polish work is tracked) but nothing in the
+  packaging pipeline itself needed changes.
 - **No app icon yet:** nothing in `design_reference/` or elsewhere in the
   repo is an `.ico`, so the spec passes `icon=None` and Inno Setup's
   shortcuts fall back to the exe's own (PyInstaller default) icon. Add one
   later by pointing the spec's `icon=` at a real `.ico` file — noted in
   `packaging/README.md` rather than inventing placeholder branding here.
+- **Follow-up (post-implementation):** added a single version-number
+  source of truth, `flashcard_generator.__version__` — shown in the
+  window title so "which build is this" is answerable after an upgrade
+  without an About dialog. `packaging/build_windows.ps1` reads it (`python
+  -c "from flashcard_generator import __version__; ..."`) and passes it to
+  Inno Setup as `ISCC /DMyAppVersion=x.y.z`; `installer.iss` wraps its own
+  literal default in `#ifndef MyAppVersion` so a standalone `ISCC
+  installer.iss` (no `/D` override) still falls back sanely instead of
+  silently stamping the wrong version. Fixed AppId in `installer.iss`
+  means installing a newer version over an old one upgrades in place —
+  no separate "upgrade" flow needed.
 
 ## Phase 11 — In-app recording *(deferred, no ETA)*
 - Replace the Phase 1 stub with real WASAPI loopback capture
   (`soundcard`/`sounddevice`/`pyaudiowpatch`).
 - **Verify:** record a loopback session in-app and confirm it's
   equivalent to an externally-recorded file for downstream phases.
+
+## Phase 12 — Release distribution *(planned)*
+- **Why this phase exists:** Phase 10 gets a `FlashcardGeneratorSetup.exe`
+  as far as `dist\installer\` on whoever's machine ran
+  `build_windows.ps1` — nothing yet gets it from there to an actual user's
+  machine. That hand-off is its own small piece of process, worth planning
+  deliberately rather than defaulting to "commit the .exe to the repo,"
+  which seems convenient but is a one-way door: a binary that doesn't diff
+  bloats repository history permanently, since git never truly forgets a
+  blob once it's been pushed, even after it's later deleted.
+- Tag the commit a build was cut from (`vX.Y.Z`, matching
+  `flashcard_generator.__version__` — see Phase 10's version-stamping
+  follow-up note above) and publish it as a GitHub Release, attaching
+  `FlashcardGeneratorSetup.exe` as a release asset. Releases are built for
+  exactly this: versioned, downloadable, with no repo-history cost.
+- **Optional follow-up, not this phase:** a GitHub Actions workflow on a
+  `windows-latest` runner that runs `packaging/build_windows.ps1` and
+  uploads its output to the release automatically on a pushed tag. Worth
+  doing once manual releases get tedious; more CI investment than a
+  project with a single manual release so far has earned.
+- **Verify:** tag a release, confirm the attached installer downloads and
+  installs cleanly on a machine that's never had this repo cloned.
 
 ---
 
