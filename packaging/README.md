@@ -24,8 +24,12 @@ developed in.
 From the repo root:
 
 ```powershell
-uv run powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+uv run powershell -ExecutionPolicy Bypass -File packaging/build_windows.ps1
 ```
+
+(Forward slashes even on Windows — if you're pasting this into a bash-style
+shell such as Git Bash, an unquoted `\b` gets its backslash silently
+stripped before PowerShell ever sees the path.)
 
 This runs PyInstaller (spec: `packaging/flashcard_generator.spec`), producing
 a one-folder app at `dist\FlashcardGenerator\`, then invokes Inno Setup if
@@ -36,7 +40,7 @@ To do either step by hand instead:
 
 ```powershell
 pyinstaller packaging/flashcard_generator.spec --distpath dist --workpath build
-ISCC packaging\installer.iss
+ISCC packaging/installer.iss
 ```
 
 ## Verify (per ROADMAP.md Phase 10)

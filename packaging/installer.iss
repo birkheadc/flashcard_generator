@@ -2,7 +2,7 @@
 ; Requires Inno Setup 6 (https://jrsoftware.org/isinfo.php) and a PyInstaller
 ; build already produced at dist\FlashcardGenerator (see README.md).
 ;
-; Build with:  ISCC packaging\installer.iss   (run from the repo root)
+; Build with:  ISCC packaging/installer.iss   (run from the repo root)
 
 #define MyAppName "Flashcard Generator"
 ; Overridden by build_windows.ps1 via `ISCC /DMyAppVersion=x.y.z`, which reads

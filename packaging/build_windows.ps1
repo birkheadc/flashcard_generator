@@ -12,11 +12,15 @@
     group installed, e.g.:
 
         uv sync --group packaging
-        uv run powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+        uv run powershell -ExecutionPolicy Bypass -File packaging/build_windows.ps1
 
     Or, from an already-activated venv:
 
-        powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+        powershell -ExecutionPolicy Bypass -File packaging/build_windows.ps1
+
+    Use forward slashes in this path even on Windows: a backslash path typed
+    into a bash-style shell (e.g. Git Bash) gets its backslash silently
+    stripped by the shell's own escaping before PowerShell ever sees it.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -46,7 +50,7 @@ try {
         Write-Host "==> Installer written to dist\installer\FlashcardGeneratorSetup.exe"
     } else {
         Write-Warning "ISCC.exe (Inno Setup) not found on PATH or in its default install location."
-        Write-Warning "Install it from https://jrsoftware.org/isinfo.php, then run: ISCC packaging\installer.iss"
+        Write-Warning "Install it from https://jrsoftware.org/isinfo.php, then run: ISCC packaging/installer.iss"
     }
 }
 finally {
