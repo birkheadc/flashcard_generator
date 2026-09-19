@@ -205,6 +205,10 @@ class MainWindow(QMainWindow):
     _START_DELAY_MS = 60
     _MIN_VISIBLE_MS = 400
 
+    # _seek_then_play: how long to give QMediaPlayer.setPosition() to land
+    # before calling play(). See that method's docstring.
+    _SEEK_SETTLE_MS = 50
+
     # Real values are measured at the end of _build_toolbar; class-level
     # (not set in __init__) so they're already 0 for any resizeEvent Qt
     # dispatches before then — as early as the self.resize() call below,
@@ -1143,6 +1147,24 @@ class MainWindow(QMainWindow):
         self._stop_loop()
         self._player.setPosition(int(seconds * 1000))
 
+    def _seek_then_play(self, position_ms: int) -> None:
+        """Seek, then start playback only once the seek has actually landed.
+
+        setPosition() is asynchronous. Calling play() immediately after it
+        can start the audio sink before the backend has actually caught up
+        to the new position, which clips the first frames of audio and
+        produces an audible pop at the start of playback — reproduced on
+        Windows' native multimedia backend, not on Linux. Pausing first
+        (see the loop-restart case this is also used from) only helps when
+        there's old audio still draining from a *previous* position; it
+        does nothing for this backend catch-up latency, which is why that
+        alone didn't fix playback starting fresh from a stopped/paused
+        state. Deferring play() by _SEEK_SETTLE_MS gives the backend a beat
+        to settle instead.
+        """
+        self._player.setPosition(position_ms)
+        QTimer.singleShot(self._SEEK_SETTLE_MS, self._player.play)
+
     def _on_position_changed(self, position_ms: int) -> None:
         if self._loop_range is not None and position_ms >= self._loop_range[1] * 1000:
             if self._loop_repeats:
@@ -1157,10 +1179,10 @@ class MainWindow(QMainWindow):
                 # seek) was never actually missing anything. Pausing first
                 # lets whatever's already queued in the output buffer finish
                 # playing out before the seek, then resumes from the loop
-                # start on a clean buffer.
+                # start on a clean buffer; _seek_then_play then handles the
+                # separate new-position catch-up latency on top of that.
                 self._player.pause()
-                self._player.setPosition(int(self._loop_range[0] * 1000))
-                self._player.play()
+                self._seek_then_play(int(self._loop_range[0] * 1000))
             else:
                 self._stop_loop()
         self._waveform.set_position(position_ms / 1000)
@@ -1391,8 +1413,8 @@ class MainWindow(QMainWindow):
         self._loop_range = loop_range
         self._loop_source = source
         self._loop_repeats = repeat
-        self._player.setPosition(int(loop_range[0] * 1000))
-        self._player.play()
+        self._player.pause()
+        self._seek_then_play(int(loop_range[0] * 1000))
         self._preview_button.setText("Stop Preview" if source == "item" else "Loop Preview")
         self._preview_button.setIcon(icon("mdi6.stop" if source == "item" else "mdi6.repeat-variant"))
         self._play_selection_button.setToolTip(
