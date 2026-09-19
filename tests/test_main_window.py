@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QInputMethodEvent, QKeySequence, QTextCursor
-from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QFileDialog, QLabel, QLineEdit, QMessageBox
 
 from flashcard_generator import __version__
@@ -167,8 +166,8 @@ def test_seek_moves_player_position(qtbot, wav_file):
 
     window._seek_to_seconds(1.0)
 
-    qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
-    assert window._player.position() == pytest.approx(1000, abs=100)
+    qtbot.waitUntil(lambda: window._engine.position() > 0, timeout=3000)
+    assert window._engine.position() == pytest.approx(1.0, abs=0.1)
 
 
 def test_record_action_is_disabled_stub(qtbot):
@@ -246,8 +245,9 @@ def test_manually_added_item_keeps_manual_provenance(qtbot, wav_file):
 def test_suggest_clips_persists_provenance_to_session_file(qtbot, session_path):
     # Goes through load_session directly rather than a second MainWindow +
     # _restore_session(): loading the same real audio file into a second
-    # QMediaPlayer while the first is still alive hangs under this sandbox's
-    # offscreen multimedia backend (unrelated to provenance/VAD logic —
+    # playback engine while the first is still alive hangs under this
+    # sandbox's offscreen multimedia backend (unrelated to provenance/VAD
+    # logic —
     # session-restore-from-real-audio is already exercised elsewhere with a
     # synthetic wav_file, e.g. the Ctrl+E quick-export tests below).
     window = MainWindow()
@@ -292,7 +292,13 @@ def test_import_long_audio_proceeds_if_confirmed(qtbot, wav_file, monkeypatch):
         QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes
     )
 
-    path = wav_file(duration_seconds=31 * 60, sample_rate=800)
+    # Unlike test_waveform.py's own long-audio fixtures (which never reach
+    # PlaybackEngine), this one goes through the real _load_audio_file path,
+    # so the sample rate has to be one QAudioSink can actually negotiate
+    # with the output device — 800Hz (fine for compute_waveform, which
+    # doesn't care) isn't; 8000Hz is a real, universally-supported rate and
+    # still keeps this 31-minute fixture file small.
+    path = wav_file(duration_seconds=31 * 60, sample_rate=8000)
 
     window = MainWindow()
     qtbot.addWidget(window)
@@ -627,11 +633,22 @@ def test_loop_preview_seeks_back_to_item_start_past_end(qtbot, wav_file):
 
     window._on_preview_clicked()
     assert window._preview_button.text() == "Stop Preview"
-    qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
+    qtbot.waitUntil(lambda: window._engine.position() > 0, timeout=3000)
 
-    window._on_position_changed(2500)  # past the item's 2.0s end
+    # Force the write pointer past the item's 2.0s end and pump once
+    # directly, the same style test_playback_engine.py uses to test the
+    # wrap splice in isolation — this test's job is to confirm the UI
+    # wiring (loop started via _on_preview_clicked) rides on that engine
+    # behavior, not to re-derive the wrap arithmetic.
+    window._engine._write_pos = window._engine._clamp_frame(2.5)
+    window._engine._pump()
 
-    assert window._player.position() == pytest.approx(1000, abs=50)
+    # How far past 1.0s it lands depends on how much of the sink's buffer
+    # was still free at the moment of this pump (real ticks may already
+    # have run during the waitUntil above) — see
+    # test_playback_engine.py's own wrap test for the precise version of
+    # this check. What this test cares about is that it wrapped at all.
+    assert window._engine.position() < 2.0
 
     window._on_preview_clicked()
     assert window._preview_button.text() == "Loop Preview"
@@ -654,11 +671,12 @@ def test_play_selection_loop_seeks_back_to_selection_start_past_end(qtbot, wav_f
 
     window._on_play_selection_clicked()
     assert window._play_selection_button.toolTip() == "Stop"
-    qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
+    qtbot.waitUntil(lambda: window._engine.position() > 0, timeout=3000)
 
-    window._on_position_changed(2500)  # past the selection's 2.0s end
+    window._engine._write_pos = window._engine._clamp_frame(2.5)  # past the 2.0s end
+    window._engine._pump()
 
-    assert window._player.position() == pytest.approx(1000, abs=50)
+    assert window._engine.position() < 2.0
 
     window._on_play_selection_clicked()
     assert window._play_selection_button.toolTip() == "Play Selection (Loop)"
@@ -670,26 +688,29 @@ def test_row_play_stops_at_clip_end_instead_of_looping(qtbot, wav_file):
     # The clip deck's row Play is a quick, single listen-through while
     # scanning many rows — unlike the item editor's "Loop Preview", it
     # should not loop back to the clip's start once it reaches the end.
-    path = wav_file(duration_seconds=10.0)
+    # A short clip range is used so real playback actually reaches the end
+    # within the waitUntil below — the engine only flips to "not playing"
+    # once the buffered tail has genuinely drained (see
+    # PlaybackEngine._update_position), not the instant the write pointer
+    # crosses the boundary, so there's no synchronous injection point to
+    # fake this one the way the repeating-loop tests above do.
+    path = wav_file(duration_seconds=2.0)
 
     window = MainWindow()
     qtbot.addWidget(window)
     window._load_audio_file(path)
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 
-    window._items.add(Item(clip=Clip(1.0, 2.0)))
+    window._items.add(Item(clip=Clip(0.0, 0.1)))
     window._refresh_item_list_widget()
 
     window._on_row_play_clicked(0)
     assert window._loop_source == "row"
     assert not window._loop_repeats
-    qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
 
-    window._on_position_changed(2500)  # past the clip's 2.0s end
-
+    qtbot.waitUntil(lambda: window._loop_source is None, timeout=3000)
     assert window._loop_range is None
-    assert window._loop_source is None
-    assert window._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState
+    assert not window._engine.is_playing()
 
 
 def test_clearing_selection_stops_selection_loop(qtbot, wav_file):
@@ -702,7 +723,7 @@ def test_clearing_selection_stops_selection_loop(qtbot, wav_file):
 
     window._waveform._waveform.set_selection(1.0, 2.0)
     window._on_play_selection_clicked()
-    qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
+    qtbot.waitUntil(lambda: window._engine.position() > 0, timeout=3000)
 
     window._waveform.clear_selection()
 
@@ -720,7 +741,7 @@ def test_manual_seek_stops_active_loop(qtbot, wav_file):
 
     window._waveform._waveform.set_selection(1.0, 2.0)
     window._on_play_selection_clicked()
-    qtbot.waitUntil(lambda: window._player.position() > 0, timeout=3000)
+    qtbot.waitUntil(lambda: window._engine.position() > 0, timeout=3000)
 
     window._seek_to_seconds(5.0)
 
@@ -851,6 +872,30 @@ def test_failed_import_shows_supported_formats_and_keeps_playback_disabled(
     assert len(shown_messages) == 1
     message_text = shown_messages[0][2]
     assert "Supported file types" in message_text
+
+
+def test_unsupported_sample_rate_shows_playback_error_without_hanging(
+    qtbot, wav_file, monkeypatch
+):
+    # Regression check for the exact hang this rewrite hit during
+    # development: PlaybackEngine.load() validates the output format
+    # synchronously, so an unsupported rate must reach _on_engine_error's
+    # QMessageBox.critical() through a monkeypatch here rather than a real
+    # modal blocking a headless run.
+    shown_messages = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", lambda *args, **kwargs: shown_messages.append(args)
+    )
+
+    path = wav_file(duration_seconds=1.0, sample_rate=800)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._load_audio_file(path)
+
+    assert len(shown_messages) == 1
+    assert shown_messages[0][1] == "Playback error"
+    assert "800" in shown_messages[0][2]
 
 
 # -- item text field (Phase 3) -------------------------------------------
@@ -1284,6 +1329,15 @@ def test_marking_cloze_does_not_move_focus_to_loop_preview(qtbot, wav_file):
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
+    # This test depends on Qt actually having assigned a default focus
+    # widget before the click below, which needs a real event-loop
+    # settling period after show() — waitExposed()/waitActive() aren't
+    # enough (confirmed: focusWidget() stayed None through those). It used
+    # to come for free from waiting on QMediaPlayer's async
+    # durationChanged signal below; now that PlaybackEngine reports
+    # duration synchronously, that wait no longer blocks on anything, so
+    # this has to be explicit instead.
+    qtbot.wait(200)
     window._load_audio_file(path)
     qtbot.waitUntil(lambda: window._duration_ms > 0, timeout=3000)
 

@@ -6,9 +6,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QTextCharFormat, QTextCursor
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -36,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
+from ..audio.playback_engine import PlaybackEngine
 from ..audio.waveform import AudioTooLongError, compute_waveform
 from ..clips import Clip
 from ..export import ExportBlockedError, default_deck_name, export_apkg
@@ -205,10 +205,6 @@ class MainWindow(QMainWindow):
     _START_DELAY_MS = 60
     _MIN_VISIBLE_MS = 400
 
-    # _seek_then_play: how long to give QMediaPlayer.setPosition() to land
-    # before calling play(). See that method's docstring.
-    _SEEK_SETTLE_MS = 50
-
     # Real values are measured at the end of _build_toolbar; class-level
     # (not set in __init__) so they're already 0 for any resizeEvent Qt
     # dispatches before then — as early as the self.resize() call below,
@@ -223,13 +219,11 @@ class MainWindow(QMainWindow):
         theme.ensure_fonts_loaded()
         self.setStyleSheet(theme.STYLESHEET)
 
-        self._player = QMediaPlayer(self)
-        self._audio_output = QAudioOutput(self)
-        self._player.setAudioOutput(self._audio_output)
-        self._player.positionChanged.connect(self._on_position_changed)
-        self._player.durationChanged.connect(self._on_duration_changed)
-        self._player.playbackStateChanged.connect(self._on_playback_state_changed)
-        self._player.errorOccurred.connect(self._on_player_error)
+        self._engine = PlaybackEngine(self)
+        self._engine.positionChanged.connect(self._on_engine_position_changed)
+        self._engine.durationChanged.connect(self._on_engine_duration_changed)
+        self._engine.playingChanged.connect(self._on_engine_playing_changed)
+        self._engine.errorOccurred.connect(self._on_engine_error)
 
         self._duration_ms = 0
         self._items = ItemList()
@@ -920,7 +914,6 @@ class MainWindow(QMainWindow):
             self._show_load_error(exc)
             return
 
-        self._player.stop()
         self._stop_loop()
         self._items.clear()
         for item in initial_items or []:
@@ -929,7 +922,7 @@ class MainWindow(QMainWindow):
         self._set_transcript_text(initial_transcript_text)
         self._waveform.set_waveform(waveform_data)
         self._update_item_regions()
-        self._player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
+        self._engine.load(str(Path(path).resolve()))
         self._play_button.setEnabled(True)
         self._import_transcript_action.setEnabled(True)
         self._import_transcript_action.setToolTip("")
@@ -1136,79 +1129,48 @@ class MainWindow(QMainWindow):
         )
 
     def _toggle_playback(self) -> None:
-        was_playing = self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        was_playing = self._engine.is_playing()
         self._stop_loop()
         if was_playing:
-            self._player.pause()
+            self._engine.pause()
         else:
-            self._player.play()
+            self._engine.play()
 
     def _seek_to_seconds(self, seconds: float) -> None:
         self._stop_loop()
-        self._player.setPosition(int(seconds * 1000))
+        self._engine.seek(seconds)
 
-    def _seek_then_play(self, position_ms: int) -> None:
-        """Seek, then start playback only once the seek has actually landed.
+    def _on_engine_position_changed(self, seconds: float) -> None:
+        self._waveform.set_position(seconds)
+        self._update_time_label(int(seconds * 1000))
 
-        setPosition() is asynchronous. Calling play() immediately after it
-        can start the audio sink before the backend has actually caught up
-        to the new position, which clips the first frames of audio and
-        produces an audible pop at the start of playback — reproduced on
-        Windows' native multimedia backend, not on Linux. Pausing first
-        (see the loop-restart case this is also used from) only helps when
-        there's old audio still draining from a *previous* position; it
-        does nothing for this backend catch-up latency, which is why that
-        alone didn't fix playback starting fresh from a stopped/paused
-        state. Deferring play() by _SEEK_SETTLE_MS gives the backend a beat
-        to settle instead.
-        """
-        self._player.setPosition(position_ms)
-        QTimer.singleShot(self._SEEK_SETTLE_MS, self._player.play)
-
-    def _on_position_changed(self, position_ms: int) -> None:
-        if self._loop_range is not None and position_ms >= self._loop_range[1] * 1000:
-            if self._loop_repeats:
-                # Seeking straight back to the loop start *while still
-                # playing* raced the audio backend's own output buffering:
-                # positionChanged reports the decoder's position, which runs
-                # ahead of what's actually reached the speakers, so jumping
-                # the decoder to the loop start immediately discarded the
-                # last bit of the old buffered audio before it was ever
-                # heard — the clip appeared to cut off early even though the
-                # exported file (played once, start to finish, no mid-stream
-                # seek) was never actually missing anything. Pausing first
-                # lets whatever's already queued in the output buffer finish
-                # playing out before the seek, then resumes from the loop
-                # start on a clean buffer; _seek_then_play then handles the
-                # separate new-position catch-up latency on top of that.
-                self._player.pause()
-                self._seek_then_play(int(self._loop_range[0] * 1000))
-            else:
-                self._stop_loop()
-        self._waveform.set_position(position_ms / 1000)
-        self._update_time_label(position_ms)
-
-    def _on_duration_changed(self, duration_ms: int) -> None:
-        self._duration_ms = duration_ms
-        self._waveform.set_duration(duration_ms / 1000)
-        self._update_time_label(self._player.position())
+    def _on_engine_duration_changed(self, seconds: float) -> None:
+        self._duration_ms = int(seconds * 1000)
+        self._waveform.set_duration(seconds)
+        self._update_time_label(int(self._engine.position() * 1000))
 
     def _update_time_label(self, position_ms: int) -> None:
         self._time_label.setText(
             f"{format_time(position_ms / 1000)} / {format_time(self._duration_ms / 1000)}"
         )
 
-    def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        if state == QMediaPlayer.PlaybackState.PlayingState:
+    def _on_engine_playing_changed(self, playing: bool) -> None:
+        if playing:
             self._play_button.setToolTip("Pause")
             self._play_button.setIcon(icon("mdi6.pause"))
         else:
             self._play_button.setToolTip("Play")
             self._play_button.setIcon(icon("mdi6.play"))
+            # Covers both a user-initiated stop (_stop_loop calling
+            # engine.stop_loop()) and the engine autonomously finishing a
+            # non-repeating loop (clip-deck row play) — either way, once
+            # the engine says it's no longer playing, the loop UI (button
+            # text/icons, _loop_range bookkeeping) needs resetting.
+            if self._loop_source is not None:
+                self._reset_loop_ui()
 
-    def _on_player_error(self, error: QMediaPlayer.Error, error_string: str) -> None:
-        if error != QMediaPlayer.Error.NoError:
-            QMessageBox.critical(self, "Playback error", error_string)
+    def _on_engine_error(self, message: str) -> None:
+        QMessageBox.critical(self, "Playback error", message)
 
     # -- items ------------------------------------------------------------
 
@@ -1221,6 +1183,7 @@ class MainWindow(QMainWindow):
                 self._stop_loop()
             else:
                 self._loop_range = selection
+                self._engine.set_loop_bounds(*selection)
 
     def _on_add_item_clicked(self) -> None:
         if self._pending_selection is None:
@@ -1335,6 +1298,7 @@ class MainWindow(QMainWindow):
         )
         if self._loop_source == "item" and self._loop_item_index == index:
             self._loop_range = (start, end)
+            self._engine.set_loop_bounds(start, end)
         self._refresh_item_list_widget()
         self._update_item_regions()
         if self._item_list_widget.currentRow() == index:
@@ -1413,8 +1377,7 @@ class MainWindow(QMainWindow):
         self._loop_range = loop_range
         self._loop_source = source
         self._loop_repeats = repeat
-        self._player.pause()
-        self._seek_then_play(int(loop_range[0] * 1000))
+        self._engine.start_loop(loop_range[0], loop_range[1], repeat=repeat)
         self._preview_button.setText("Stop Preview" if source == "item" else "Loop Preview")
         self._preview_button.setIcon(icon("mdi6.stop" if source == "item" else "mdi6.repeat-variant"))
         self._play_selection_button.setToolTip(
@@ -1425,13 +1388,20 @@ class MainWindow(QMainWindow):
         )
 
     def _stop_loop(self) -> None:
+        # UI reset lives in _reset_loop_ui, reached reactively via
+        # _on_engine_playing_changed(False) once engine.stop_loop() pauses
+        # the transport — that same reactive path also covers a
+        # non-repeating loop (clip-deck row play) finishing on its own, so
+        # there's only one place that clears the loop UI state.
         if self._loop_source is None:
             return
+        self._engine.stop_loop()
+
+    def _reset_loop_ui(self) -> None:
         self._loop_range = None
         self._loop_source = None
         self._loop_item_index = None
         self._loop_repeats = True
-        self._player.pause()
         self._preview_button.setText("Loop Preview")
         self._preview_button.setIcon(icon("mdi6.repeat-variant"))
         self._play_selection_button.setToolTip("Play Selection (Loop)")
