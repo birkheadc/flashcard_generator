@@ -19,12 +19,33 @@ _MIN_REGION_DURATION = 0.05
 # fixed-width bars across the same total duration — so zooming in raises
 # how much of the timeline each bar covers on-screen (fidelity), rather
 # than stretching existing bars wider.
-_BAR_WIDTH = 3.0
-_BAR_GAP = 2.0
+_BAR_WIDTH = 2.0
+_BAR_GAP = 1.0
 _BAR_PITCH = _BAR_WIDTH + _BAR_GAP
 
 # Keeps near-silent stretches visible as a thin bar instead of vanishing.
 _MIN_BAR_HALF_HEIGHT = 1.5
+
+# Absolute (not per-file) reference points amplitude is normalized against,
+# in raw sample units (full scale is 1.0). Deliberately fixed rather than
+# derived from each file's own loudness: a quiet recording should still
+# look quiet next to a loud one, rather than both being stretched to fill
+# the same height.
+#
+# Amplitude at or below _SILENCE_FLOOR reads as inaudible background/noise
+# floor and is clamped to the minimum dot; amplitude at or above
+# _FULL_SCALE_PEAK (true 0 dBFS) clips at full bar height.
+_SILENCE_FLOOR = 0.02
+_FULL_SCALE_PEAK = 1.0
+
+# Applied to the normalized (0..1) amplitude as amplitude ** _GAMMA before
+# mapping to bar height. A gamma below 1 bends that curve upward: the
+# derivative near zero is steep (so crossing just above the silence floor
+# reads as a big, obvious jump in height) while it flattens out toward 1.0
+# (so small/medium/large noises end up much closer in height than their raw
+# amplitude ratio would suggest) — closer to how loudness is perceived than
+# a straight linear mapping.
+_GAMMA = 0.4
 
 # Floor for the widget's on-screen height, independent of however tall a
 # previous _relayout_content() pass happened to make it — see WaveformView
@@ -188,7 +209,11 @@ class WaveformWidget(QWidget):
                     min(int((x + _BAR_PITCH - track_left) / usable_width * num_columns), num_columns),
                 )
                 amplitude = float((peaks_max[col_start:col_end] - peaks_min[col_start:col_end]).mean()) / 2.0
-                half_height = max(amplitude * mid_y, _MIN_BAR_HALF_HEIGHT)
+                normalized = min(
+                    max((amplitude - _SILENCE_FLOOR) / (_FULL_SCALE_PEAK - _SILENCE_FLOOR), 0.0), 1.0
+                )
+                shaped = normalized**_GAMMA if normalized > 0.0 else 0.0
+                half_height = max(shaped * mid_y, _MIN_BAR_HALF_HEIGHT)
                 painter.drawRoundedRect(
                     QRectF(x, mid_y - half_height, _BAR_WIDTH, half_height * 2), 1.0, 1.0
                 )
