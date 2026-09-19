@@ -9,7 +9,7 @@ import soundfile as sf
 from flashcard_generator.clips import Clip
 from flashcard_generator.vad import suggest_snippets
 
-REAL_SPEECH_SAMPLE = Path(__file__).parent.parent / "sample" / "kokoro" / "001_1.wav"
+REAL_SPEECH_SAMPLE = Path(__file__).parent / "fixtures" / "speech_sample.wav"
 
 
 def test_suggest_snippets_finds_speech_in_a_real_recording():

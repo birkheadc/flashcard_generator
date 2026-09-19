@@ -12,7 +12,7 @@ from flashcard_generator import __version__
 from flashcard_generator.clips import Clip
 from flashcard_generator.items import PROVENANCE_MANUAL, PROVENANCE_VAD, Item, ItemList
 
-REAL_SPEECH_SAMPLE = Path(__file__).parent.parent / "sample" / "kokoro" / "001_1.wav"
+REAL_SPEECH_SAMPLE = Path(__file__).parent / "fixtures" / "speech_sample.wav"
 from flashcard_generator.session import load_session, save_session
 from flashcard_generator.template import NoteTemplate
 from flashcard_generator.ui.main_window import (
