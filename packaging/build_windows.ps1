@@ -35,8 +35,12 @@ try {
     if ($isccCmd) {
         $isccPath = $isccCmd.Source
     } else {
-        $defaultPath = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
-        $isccPath = if (Test-Path $defaultPath) { $defaultPath } else { $null }
+        $candidatePaths = @(
+            (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+            (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+            (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
+        )
+        $isccPath = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
     }
 
     if ($isccPath) {
