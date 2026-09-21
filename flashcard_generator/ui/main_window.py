@@ -976,8 +976,12 @@ class MainWindow(QMainWindow):
             return
         try:
             raw_text = Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.critical(self, "Failed to load transcript", str(exc))
+        except (OSError, UnicodeDecodeError) as exc:
+            QMessageBox.critical(
+                self,
+                "Failed to load transcript",
+                f"{exc}\n\nThe file must be UTF-8 text.",
+            )
             return
         self._set_transcript_text(normalize_transcript(raw_text))
         self._save_session()
